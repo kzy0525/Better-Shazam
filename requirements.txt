@@ -1,0 +1,11 @@
+numpy
+scipy
+sounddevice
+soundfile
+librosa
+noisereduce
+audiomentations
+torch
+torchaudio
+faiss-cpu
+matplotlib

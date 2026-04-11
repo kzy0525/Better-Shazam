@@ -15,6 +15,21 @@ from typing import List, Tuple
 from config import SAMPLE_RATE, N_FFT, HOP_LENGTH, N_MELS, FMIN, FMAX
 
 
+def mel_frequencies() -> np.ndarray:
+    """Return the centre frequency (Hz) for each of the N_MELS mel bins.
+
+    Computed directly from the mel scale formula — no librosa dependency
+    at call time so this is safe to use in test scripts.
+
+    Returns:
+        1-D float64 array of shape (N_MELS,).
+    """
+    fmin_mel = 2595.0 * np.log10(1.0 + FMIN / 700.0)
+    fmax_mel = 2595.0 * np.log10(1.0 + FMAX / 700.0)
+    mels = np.linspace(fmin_mel, fmax_mel, N_MELS)
+    return 700.0 * (10.0 ** (mels / 2595.0) - 1.0)
+
+
 def compute_mel_spectrogram(
     audio: np.ndarray,
     sr: int = SAMPLE_RATE,
@@ -53,6 +68,8 @@ def extract_peaks(
     n_peaks_per_sec: int = 20,
     min_amplitude_db: float = -60.0,
     neighborhood: int = 20,
+    freq_ceiling_bin: int = 100,
+    time_border: int = 5,
 ) -> List[Tuple[int, int, float]]:
     """Extract sparse local-maxima peaks from a mel spectrogram.
 
@@ -67,21 +84,33 @@ def extract_peaks(
         min_amplitude_db: Discard peaks below this dB threshold.
         neighborhood:     Side length of the maximum-filter window (pixels).
 
+        freq_ceiling_bin: Ignore peaks at or above this mel bin index (0-indexed).
+                          Cuts high-frequency noise above the useful range.
+        time_border:      Number of frames to ignore at each end of the spectrogram
+                          to avoid STFT boundary artifacts.
+
     Returns:
         List of (time_frame, freq_bin, amplitude_db) tuples sorted by
-        descending amplitude. These index directly into the spectrogram array.
+        descending amplitude. time_frame values are relative to the full
+        spectrogram (boundary frames added back in).
     """
-    # Local maximum filter — a point is a peak if it equals the neighbourhood max
-    local_max = maximum_filter(spectrogram, size=(neighborhood, neighborhood))
-    is_peak = (spectrogram == local_max) & (spectrogram >= min_amplitude_db)
+    # Slice out boundary frames and high-frequency bins before peak search
+    interior = spectrogram[:freq_ceiling_bin, time_border:-time_border]
 
-    freq_bins, time_frames = np.where(is_peak)
-    amplitudes = spectrogram[freq_bins, time_frames]
+    # Local maximum filter — a point is a peak if it equals the neighbourhood max
+    local_max = maximum_filter(interior, size=(neighborhood, neighborhood))
+    is_peak = (interior == local_max) & (interior >= min_amplitude_db)
+
+    freq_bins, time_frames_interior = np.where(is_peak)
+    amplitudes = interior[freq_bins, time_frames_interior]
+
+    # Restore absolute time frame indices (offset by the trimmed border)
+    time_frames = time_frames_interior + time_border
 
     # Bundle into tuples and sort strongest first (deterministic for equal amps
     # because we use a stable sort on a derived key)
     peaks = sorted(
-        zip(time_frames.tolist(), freq_bins.tolist(), amplitudes.tolist()),
+        zip(time_frames.tolist(), freq_bins.tolist(), amplitudes.tolist()),  # type: ignore[union-attr]
         key=lambda p: p[2],
         reverse=True,
     )

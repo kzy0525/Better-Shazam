@@ -14,10 +14,15 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import librosa
+import soundfile as sf
 
-from fingerprint.spectrogram import compute_mel_spectrogram, extract_peaks, plot_spectrogram
-from config import SAMPLE_RATE
+from fingerprint.spectrogram import (
+    compute_mel_spectrogram,
+    extract_peaks,
+    plot_spectrogram,
+    mel_frequencies,
+)
+from config import SAMPLE_RATE, HOP_LENGTH
 
 FILTERED_WAV = os.path.join(os.path.dirname(__file__), "..", "output", "test_filtered.wav")
 OUT_DIR = os.path.join(os.path.dirname(__file__), "..", "output")
@@ -26,7 +31,9 @@ OUT_DIR = os.path.join(os.path.dirname(__file__), "..", "output")
 def main() -> None:
     # --- 1. Load filtered WAV from Phase 1 -----------------------------------
     print(f"Loading: {FILTERED_WAV}")
-    audio, sr = librosa.load(FILTERED_WAV, sr=SAMPLE_RATE, mono=True)
+    audio, sr = sf.read(FILTERED_WAV, dtype="float32")
+    if audio.ndim > 1:
+        audio = audio.mean(axis=1)  # ensure mono
     print(f"Audio loaded — samples: {len(audio)}, sr: {sr} Hz, duration: {len(audio)/sr:.2f}s")
 
     # --- 2. Compute mel spectrogram ------------------------------------------
@@ -37,11 +44,10 @@ def main() -> None:
     peaks = extract_peaks(spec, sr=sr)
     print(f"Peaks found: {len(peaks)}")
 
+    freqs = mel_frequencies()
     print("\nTop 5 strongest peaks (time_frame, freq_bin, amplitude_dB):")
     for i, (t, f, a) in enumerate(peaks[:5]):
-        import librosa as _librosa
-        freqs = _librosa.mel_frequencies(n_mels=128, fmin=80, fmax=8000)
-        time_sec = _librosa.frames_to_time(t, sr=sr, hop_length=512)
+        time_sec = (t * HOP_LENGTH) / sr
         print(f"  #{i+1}  t={time_sec:.3f}s  freq={freqs[f]:.1f}Hz  amp={a:.1f}dB")
 
     # --- 4. Plot without peaks -----------------------------------------------

@@ -103,7 +103,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Phase 3 real-song demo")
     parser.add_argument("--songs", required=True, help="Folder containing audio files")
     parser.add_argument("--reuse-db", action="store_true", help="Skip re-registering songs if DB exists")
-    parser.add_argument("--min-confidence", type=int, default=15, help="Minimum match confidence (default: 15)")
+    parser.add_argument("--min-confidence", type=int, default=5, help="Minimum match confidence (default: 5)")
     args = parser.parse_args()
 
     os.makedirs(OUT_DIR, exist_ok=True)

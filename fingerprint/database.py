@@ -5,15 +5,13 @@ Handles song registration (full pipeline: WAV → hashes → DB) and
 query matching via time-coherence histogramming.
 """
 
-import os
 import sqlite3
 from collections import defaultdict
 from typing import List, Tuple
 
-import numpy as np
 import soundfile as sf
 
-from audio.preprocess import preprocess
+from audio.preprocess import full_preprocess_pipeline
 from fingerprint.spectrogram import compute_mel_spectrogram, extract_peaks
 from fingerprint.hash import generate_hashes
 from config import SAMPLE_RATE
@@ -66,7 +64,7 @@ def register_song(
     """Register a WAV file in the database by running it through the full pipeline.
 
     Pipeline:
-        WAV → bandpass filter → mel spectrogram → peak extraction → hashing → SQLite
+        WAV → noise reduction → bandpass filter → mel spectrogram → peak extraction → hashing → SQLite
 
     Args:
         title:    Song title string.
@@ -85,7 +83,7 @@ def register_song(
         raise ValueError(f"Expected {SAMPLE_RATE} Hz, got {sr} Hz for {filepath}")
 
     # Full fingerprinting pipeline
-    audio = preprocess(audio, sample_rate=sr)
+    audio = full_preprocess_pipeline(audio, sample_rate=sr)
     spec = compute_mel_spectrogram(audio, sr=sr)
     peaks = extract_peaks(spec, sr=sr)
     hashes = generate_hashes(peaks)
@@ -111,7 +109,7 @@ def register_song(
 def query_db(
     query_hashes: List[Tuple[int, int]],
     db_path: str = "shazam.db",
-    min_confidence: int = 15,
+    min_confidence: int = 5,
 ):
     """Match a snippet's hashes against the database using time-coherence voting.
 

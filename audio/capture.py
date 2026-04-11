@@ -11,6 +11,7 @@ import sounddevice as sd
 import soundfile as sf
 
 from config import SAMPLE_RATE, CLIP_LENGTH
+from audio.preprocess import full_preprocess_pipeline
 
 
 def record(
@@ -49,3 +50,32 @@ def record(
         print(f"Saved raw recording to: {save_path}")
 
     return audio
+
+
+def record_and_preprocess(
+    duration: float = CLIP_LENGTH,
+    sample_rate: int = SAMPLE_RATE,
+    save_path: str | None = None,
+) -> np.ndarray:
+    """Record from the microphone and immediately run the full preprocessing pipeline.
+
+    Chains record() → full_preprocess_pipeline() in one call. This is the
+    single entry point for all audio capture going forward — use this instead
+    of calling record() and preprocess steps separately.
+
+    Args:
+        duration:    Length of the recording in seconds.
+        sample_rate: Sample rate in Hz.
+        save_path:   If provided, save the cleaned audio to this WAV file path.
+
+    Returns:
+        Fully preprocessed 1-D float32 numpy array (Demucs separated + Wiener filtered + bandpass filtered).
+    """
+    raw = record(duration=duration, sample_rate=sample_rate)
+    cleaned = full_preprocess_pipeline(raw, sample_rate=sample_rate)
+
+    if save_path is not None:
+        sf.write(save_path, cleaned, sample_rate)
+        print(f"Saved preprocessed recording to: {save_path}")
+
+    return cleaned

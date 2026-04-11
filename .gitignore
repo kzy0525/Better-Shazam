@@ -1,0 +1,13 @@
+# Dataset
+data/genres_original/
+
+# Model weights and checkpoints
+ml/*.pt
+ml/faiss.index
+ml/metadata.json
+
+# Database and output
+output/
+__pycache__/
+*.pyc
+.DS_Store

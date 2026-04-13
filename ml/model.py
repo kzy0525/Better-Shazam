@@ -134,22 +134,26 @@ def get_model(model_path: str | None = None) -> AudioEmbedder:
 
 def train(
     gtzan_dir: str = "data/genres_original/",
+    songs_dir: str | None = None,
     epochs: int = 5,
     batch_size: int = 64,
     lr: float = 1e-4,
     save_path: str = "ml/embedder.pt",
     genres: List[str] | None = None,
 ) -> AudioEmbedder:
-    """Fine-tune AudioEmbedder using triplet loss on the GTZAN dataset.
+    """Fine-tune AudioEmbedder using triplet loss on GTZAN plus an optional songs directory.
 
-    Loads the GTZAN dataset via load_gtzan(), builds a triplet dataset with
-    cross-genre negatives, then trains with Adam and triplet loss.
+    Loads the GTZAN dataset via load_gtzan(), optionally adds songs from songs_dir
+    with higher clip/augmentation counts, builds a triplet dataset, then trains
+    with Adam and triplet loss.
     Prints per-epoch mean loss and fraction of triplets where the model
     correctly ordered anchor-positive closer than anchor-negative.
     Saves a checkpoint every 5 epochs and a training curves plot at the end.
 
     Args:
         gtzan_dir:  Path to the GTZAN genres_original/ folder.
+        songs_dir:  Optional path to a flat directory of WAV files (user song library).
+                    These get clips_per_file=6 and augmentations_per_clip=10.
         epochs:     Number of training epochs.
         batch_size: Batch size for DataLoader.
         lr:         Adam learning rate.
@@ -161,7 +165,7 @@ def train(
         Trained AudioEmbedder in eval() mode.
     """
     entries = load_gtzan(gtzan_dir, genres=genres)
-    dataset = build_triplet_dataset(gtzan_source=entries)
+    dataset = build_triplet_dataset(gtzan_source=entries, songs_dir=songs_dir)
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=False)
 
     model = AudioEmbedder()

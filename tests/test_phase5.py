@@ -42,7 +42,7 @@ from config import SAMPLE_RATE, CLIP_LENGTH
 
 # Paths
 ROOT       = os.path.join(os.path.dirname(__file__), "..")
-SONGS_DIR  = os.path.join(ROOT, "songs")
+SONGS_DIR  = os.path.join(ROOT, "test_songs")
 WAV_DIR    = os.path.join(ROOT, "output", "wav_cache")
 OUT_DIR    = os.path.join(ROOT, "output")
 ML_DIR     = os.path.join(ROOT, "ml")
@@ -162,6 +162,7 @@ def main() -> None:
     else:
         model = train(
             gtzan_dir=os.path.join(ROOT, "data", "genres_original"),
+            songs_dir=WAV_DIR,
             epochs=args.epochs,
             batch_size=64,
             lr=1e-4,

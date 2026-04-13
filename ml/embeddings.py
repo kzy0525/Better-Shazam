@@ -68,7 +68,7 @@ def _embed_audio(audio: np.ndarray, model, sr: int = SAMPLE_RATE) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 def build_faiss_index(
-    songs_dir: str = "songs/",
+    songs_dir: str = "test_songs/",
     model_path: str = "ml/embedder.pt",
     index_path: str = "ml/faiss.index",
     metadata_path: str = "ml/metadata.json",
@@ -217,7 +217,7 @@ def update_index(
 # ---------------------------------------------------------------------------
 
 def visualize_embeddings(
-    songs_dir: str = "songs/",
+    songs_dir: str = "test_songs/",
     model_path: str = "ml/embedder.pt",
     save_path: str = "ml/embeddings_pca.png",
 ) -> None:

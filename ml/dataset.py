@@ -213,7 +213,7 @@ class TripletAudioDataset(Dataset):
 
 
 def build_triplet_dataset(
-    source: List[Tuple[str, str]] | str = "songs/",
+    source: List[Tuple[str, str]] | str = "test_songs/",
     clips_per_song: int = 10,
     augmentations_per_clip: int = 5,
 ) -> TripletAudioDataset:

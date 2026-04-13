@@ -1,7 +1,7 @@
 """
 tests/test_phase5.py — Phase 5 end-to-end verification.
 
-1. Converts songs/ MP3s to WAV (if not already done)
+1. Converts test_songs/ MP3s to WAV (if not already done)
 2. Registers songs in the classical DB (Phase 3)
 3. Trains AudioEmbedder with triplet loss
 4. Builds FAISS index

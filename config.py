@@ -27,7 +27,7 @@ MAX_HASH_TIME_DELTA = 200 # frames
 EMBEDDING_DIM = 128
 
 # Paths
-SONGS_DIR = "songs"
+SONGS_DIR = "test_songs"
 DB_PATH = "fingerprints.db"
 FAISS_INDEX_PATH = "embeddings.index"
 FAISS_METADATA_PATH = "embeddings_meta.pkl"

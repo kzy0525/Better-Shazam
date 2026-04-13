@@ -246,7 +246,7 @@ def train(
 
 def evaluate_tempo_robustness(
     model: AudioEmbedder,
-    songs_dir: str = "songs/",
+    songs_dir: str = "test_songs/",
     sr: int = SAMPLE_RATE,
     save_path: str = "ml/tempo_robustness.png",
 ) -> None:

@@ -55,7 +55,7 @@ The model was trained on the GTZAN dataset (800 files across 8 genres). The 4 so
 
 ### Tempo Robustness
 
-The 4 songs in `test_songs/` (Aespa - Whiplash, Katy Perry - California Gurls, Tchaikovsky - Piano Concerto No. 1, The Weeknd - Save Your Tears) were used to evaluate how well the model holds up when the same song plays at a different speed. Each song was run through the ML path at 5 tempo rates and compared against its own clean-speed embedding.
+The 4 songs in `test_songs/` were used to evaluate how well the model holds up when the same song plays at a different speed. Each song was run through the ML path at 5 tempo rates and compared against its own clean-speed embedding.
 
 Cosine similarity between a clean anchor clip and tempo-shifted versions:
 

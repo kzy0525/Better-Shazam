@@ -147,7 +147,7 @@ def main() -> None:
     print("=" * 60)
     print("STEP 2 — Building triplet dataset")
     print("=" * 60)
-    dataset = build_triplet_dataset(WAV_DIR, clips_per_song=3, augmentations_per_clip=3)
+    dataset = build_triplet_dataset(songs_dir=WAV_DIR)
     verify_dataset(dataset, n_samples=3, save_path=os.path.join(ML_DIR, "dataset_verify.png"))
 
     # ------------------------------------------------------------------

@@ -105,7 +105,7 @@ def match(
     else:
         print("  Classical : no match")
 
-    ml_title, ml_artist = None, None
+    ml_title, ml_artist, ml_score = None, None, 0.0
     if ml_result[0]:
         ml_title, ml_artist, ml_score = ml_result[0][0]
         print(f"  ML        : '{ml_title}' by {ml_artist}  (similarity={ml_score:.3f})")
@@ -118,13 +118,19 @@ def match(
     # -----------------------------------------------------------------------
     # Combine
     # -----------------------------------------------------------------------
+    ML_HIGH_CONFIDENCE_THRESHOLD = 0.7
+
     print("\n--- Final Decision ---")
 
     both_matched = c_title is not None and ml_title is not None
     titles_agree = both_matched and c_title.lower() == ml_title.lower()
 
-    if titles_agree:
+    if titles_agree and ml_score >= ML_HIGH_CONFIDENCE_THRESHOLD:
         label = "HIGH CONFIDENCE — both paths agree"
+        title, artist = c_title, c_artist
+    elif titles_agree:
+        # Paths agree but ML similarity is weak — still a match, just less certain
+        label = "MODERATE CONFIDENCE — paths agree, low ML similarity"
         title, artist = c_title, c_artist
     elif c_title is not None and ml_title is None:
         label = "MODERATE CONFIDENCE — classical only"

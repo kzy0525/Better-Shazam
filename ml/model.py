@@ -161,7 +161,7 @@ def train(
         Trained AudioEmbedder in eval() mode.
     """
     entries = load_gtzan(gtzan_dir, genres=genres)
-    dataset = build_triplet_dataset(entries, clips_per_song=3, augmentations_per_clip=3)
+    dataset = build_triplet_dataset(gtzan_source=entries)
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=False)
 
     model = AudioEmbedder()

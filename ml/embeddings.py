@@ -98,11 +98,13 @@ def build_faiss_index(
 
     for path in wav_files:
         stem = os.path.splitext(os.path.basename(path))[0]
-        if " - " in stem:
-            parts = stem.split(" - ", 1)
-            artist, title = parts[0].strip(), parts[1].strip()
+        sep = " - " if " - " in stem else "_-_" if "_-_" in stem else None
+        if sep:
+            parts = stem.split(sep, 1)
+            artist = parts[0].replace("_", " ").strip()
+            title = parts[1].replace("_", " ").strip()
         else:
-            title, artist = stem, "Unknown"
+            title, artist = stem.replace("_", " "), "Unknown"
 
         audio, sr = sf.read(path, dtype="float32")
         if audio.ndim > 1:
@@ -245,7 +247,8 @@ def visualize_embeddings(
 
     for path in wav_files:
         stem = os.path.splitext(os.path.basename(path))[0]
-        title = stem.split(" - ", 1)[1].strip() if " - " in stem else stem
+        sep = " - " if " - " in stem else "_-_" if "_-_" in stem else None
+        title = stem.split(sep, 1)[1].replace("_", " ").strip() if sep else stem.replace("_", " ")
 
         audio, sr = sf.read(path, dtype="float32")
         if audio.ndim > 1:

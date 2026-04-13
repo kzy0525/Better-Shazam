@@ -213,58 +213,73 @@ class TripletAudioDataset(Dataset):
 
 
 def build_triplet_dataset(
-    source: List[Tuple[str, str]] | str = "test_songs/",
-    clips_per_song: int = 10,
-    augmentations_per_clip: int = 5,
+    gtzan_source: List[Tuple[str, str]] | None = None,
+    songs_dir: str | None = None,
+    gtzan_clips_per_file: int = 3,
+    gtzan_augmentations_per_clip: int = 3,
+    songs_clips_per_file: int = 6,
+    songs_augmentations_per_clip: int = 10,
 ) -> TripletAudioDataset:
-    """Build a triplet dataset from a list of (filepath, label) tuples or a flat directory.
+    """Build a triplet dataset from GTZAN entries and/or a local songs directory.
 
-    Accepts either:
-      - A list of (filepath, genre_label) tuples from load_gtzan() — preferred
-      - A flat directory path (str) of WAV files — for quick local testing
+    Handles two data sources with different sampling rates:
+      - gtzan_source: List of (filepath, genre_label) tuples from load_gtzan().
+                      Uses gtzan_clips_per_file / gtzan_augmentations_per_clip.
+      - songs_dir:    Flat directory of WAV files (the user's own song library).
+                      Uses songs_clips_per_file / songs_augmentations_per_clip.
 
-    For each song:
-        - Slices into clips (up to clips_per_song, evenly spaced)
-        - For each clip generates augmentations_per_clip augmented versions
-        - Anchor: clean mel spectrogram of the clip
-        - Positive: augmented version of the same clip (may be tempo-shifted)
-        - Negative: augmented clip from a different filepath; preferably from
-          a different genre/label to make negatives harder and improve training
+    Negative selection:
+      - GTZAN anchor  → prefers a different-genre GTZAN file; falls back to
+                        same-genre-other GTZAN, then songs_dir files.
+      - songs/ anchor → always prefers another songs_dir file; falls back to
+                        GTZAN files only if no other songs/ file is available.
+
+    Prints a triplet count breakdown at the end showing GTZAN vs songs/
+    contributions separately.
 
     Args:
-        source:                List of (filepath, label) tuples, or a directory path string.
-        clips_per_song:        Maximum clips to take per file (evenly spaced).
-        augmentations_per_clip: Number of positive augmentations per clip.
+        gtzan_source:                 (filepath, genre_label) tuples from load_gtzan().
+        songs_dir:                    Directory of WAV files for the user's song library.
+        gtzan_clips_per_file:         Max clips per GTZAN file (evenly spaced).
+        gtzan_augmentations_per_clip: Augmented positives per GTZAN clip.
+        songs_clips_per_file:         Max clips per songs/ file.
+        songs_augmentations_per_clip: Augmented positives per songs/ clip.
 
     Returns:
         TripletAudioDataset ready for use with a PyTorch DataLoader.
     """
-    # Resolve source into a list of (filepath, label) tuples
-    if isinstance(source, str):
-        songs_dir = source
-        wav_files = sorted([
+    if gtzan_source is None and songs_dir is None:
+        raise ValueError("Provide at least one of gtzan_source or songs_dir.")
+
+    # Build a unified tagged entry list: (filepath, label, source)
+    # source is "gtzan" or "songs"
+    tagged: List[Tuple[str, str, str]] = []
+
+    if gtzan_source:
+        for path, label in gtzan_source:
+            tagged.append((path, label, "gtzan"))
+
+    songs_paths: List[str] = []
+    if songs_dir and os.path.isdir(songs_dir):
+        songs_paths = sorted([
             os.path.join(songs_dir, f)
             for f in os.listdir(songs_dir)
             if f.lower().endswith(".wav")
         ])
-        if len(wav_files) < 2:
-            raise ValueError(f"Need at least 2 WAV files in {songs_dir}, found {len(wav_files)}")
-        entries = [(path, "unknown") for path in wav_files]
-    else:
-        entries = source
+        for path in songs_paths:
+            tagged.append((path, "songs", "songs"))
 
-    if len(entries) < 2:
-        raise ValueError(f"Need at least 2 entries, got {len(entries)}")
+    if len(tagged) < 2:
+        raise ValueError(f"Need at least 2 files total, got {len(tagged)}.")
 
-    # Group by label so we can find cross-genre negatives
-    label_to_indices: defaultdict[str, List[int]] = defaultdict(list)
-    for i, (_, label) in enumerate(entries):
-        label_to_indices[label].append(i)
+    # Load clips for each entry, applying per-source limits
+    print(f"Loading clips from {len(tagged)} files "
+          f"({sum(1 for _, _, s in tagged if s == 'gtzan')} GTZAN, "
+          f"{sum(1 for _, _, s in tagged if s == 'songs')} songs/)...")
 
-    # Load clips indexed by entry index
-    print(f"Loading clips from {len(entries)} files...")
     index_to_clips: dict[int, List[np.ndarray]] = {}
-    for i, (path, _) in enumerate(entries):
+    for i, (path, _, source) in enumerate(tagged):
+        limit = gtzan_clips_per_file if source == "gtzan" else songs_clips_per_file
         try:
             audio, sr = sf.read(path, dtype="float32")
         except Exception as e:
@@ -275,36 +290,50 @@ def build_triplet_dataset(
         clips = slice_audio(audio, sr=sr)
         if not clips:
             continue
-        if len(clips) > clips_per_song:
-            indices = np.linspace(0, len(clips) - 1, clips_per_song, dtype=int)
-            clips = [clips[j] for j in indices]
+        if len(clips) > limit:
+            idxs = np.linspace(0, len(clips) - 1, limit, dtype=int)
+            clips = [clips[j] for j in idxs]
         index_to_clips[i] = clips
 
     valid_indices = list(index_to_clips.keys())
     if len(valid_indices) < 2:
         raise ValueError("Need at least 2 files with extractable clips.")
 
+    # Index sets by source for negative selection
+    gtzan_indices = [i for i in valid_indices if tagged[i][2] == "gtzan"]
+    songs_indices  = [i for i in valid_indices if tagged[i][2] == "songs"]
+
     # Build triplets
     triplets: List[Tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+    gtzan_triplet_count = 0
+    songs_triplet_count = 0
 
     for anchor_idx in valid_indices:
-        _, anchor_label = entries[anchor_idx]
+        _, anchor_label, anchor_source = tagged[anchor_idx]
         anchor_clips = index_to_clips[anchor_idx]
+        aug_count = (gtzan_augmentations_per_clip if anchor_source == "gtzan"
+                     else songs_augmentations_per_clip)
 
-        # Prefer negatives from a different genre; fall back to any other file
-        different_genre = [
-            j for j in valid_indices
-            if j != anchor_idx and entries[j][1] != anchor_label
-        ]
-        same_genre_other = [
-            j for j in valid_indices
-            if j != anchor_idx and entries[j][1] == anchor_label
-        ]
-        neg_pool = different_genre if different_genre else same_genre_other
+        # Negative pool selection
+        if anchor_source == "songs":
+            # Prefer another songs/ file; fall back to GTZAN
+            other_songs = [j for j in songs_indices if j != anchor_idx]
+            neg_pool = other_songs if other_songs else gtzan_indices
+        else:
+            # GTZAN anchor: prefer different-genre GTZAN, then same-genre-other, then songs/
+            diff_genre = [
+                j for j in gtzan_indices
+                if j != anchor_idx and tagged[j][1] != anchor_label
+            ]
+            same_genre_other = [
+                j for j in gtzan_indices
+                if j != anchor_idx and tagged[j][1] == anchor_label
+            ]
+            neg_pool = diff_genre or same_genre_other or songs_indices
 
         for clip in anchor_clips:
             anchor_spec = _to_spectrogram(clip)
-            for _ in range(augmentations_per_clip):
+            for _ in range(aug_count):
                 pos_audio = augment_clip(clip)
                 positive_spec = _to_spectrogram(pos_audio)
 
@@ -315,8 +344,22 @@ def build_triplet_dataset(
 
                 triplets.append((anchor_spec, positive_spec, negative_spec))
 
+                if anchor_source == "gtzan":
+                    gtzan_triplet_count += 1
+                else:
+                    songs_triplet_count += 1
+
     random.shuffle(triplets)
-    print(f"Built {len(triplets)} triplets from {len(valid_indices)} files.")
+
+    print(f"\nTriplet breakdown:")
+    print(f"  GTZAN anchors : {gtzan_triplet_count} triplets  "
+          f"({len(gtzan_indices)} files × up to {gtzan_clips_per_file} clips "
+          f"× {gtzan_augmentations_per_clip} aug)")
+    print(f"  songs/ anchors: {songs_triplet_count} triplets  "
+          f"({len(songs_indices)} files × up to {songs_clips_per_file} clips "
+          f"× {songs_augmentations_per_clip} aug)")
+    print(f"  Total         : {len(triplets)} triplets")
+
     return TripletAudioDataset(triplets)
 
 

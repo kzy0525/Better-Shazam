@@ -61,10 +61,14 @@ def slugify(name: str) -> str:
 
 def extract_metadata(filepath: str):
     stem = os.path.splitext(os.path.basename(filepath))[0]
-    if " - " in stem:
-        parts = stem.split(" - ", 1)
-        return parts[1].strip(), parts[0].strip()
-    return stem, "Unknown"
+    # Handle both "Artist - Title" (original) and "Artist_-_Title" (slugified)
+    for sep in [" - ", "_-_"]:
+        if sep in stem:
+            parts = stem.split(sep, 1)
+            artist = parts[0].replace("_", " ").strip()
+            title = parts[1].replace("_", " ").strip()
+            return title, artist
+    return stem.replace("_", " "), "Unknown"
 
 
 def convert_to_wav(src: str, dst: str) -> None:
@@ -85,9 +89,10 @@ def find_audio_files(folder: str):
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--skip-train",  action="store_true", help="Skip training, reuse existing model")
-    parser.add_argument("--skip-record", action="store_true", help="Skip recording, reuse saved snippet")
-    parser.add_argument("--epochs",      type=int, default=20)
+    parser.add_argument("--skip-register", action="store_true", help="Skip step 1 — reuse existing songs.db and wav_cache")
+    parser.add_argument("--skip-train",    action="store_true", help="Skip step 3 — reuse existing model weights")
+    parser.add_argument("--skip-record",   action="store_true", help="Skip step 6 — reuse saved snippet")
+    parser.add_argument("--epochs",        type=int, default=5)
     args = parser.parse_args()
 
     os.makedirs(WAV_DIR, exist_ok=True)
@@ -100,31 +105,38 @@ def main() -> None:
     # 1. Convert + register songs (classical DB)
     # ------------------------------------------------------------------
     print("=" * 60)
-    print("STEP 1 — Converting and registering songs")
+    print("STEP 1 — Converting and registering songs" + (" (SKIPPED)" if args.skip_register else ""))
     print("=" * 60)
 
-    if os.path.exists(DB_PATH):
-        os.remove(DB_PATH)
-    create_db(DB_PATH)
+    # Always collect wav_paths from wav_cache so later steps can use them
+    wav_paths = sorted([
+        os.path.join(WAV_DIR, f)
+        for f in os.listdir(WAV_DIR)
+        if f.lower().endswith(".wav")
+    ]) if args.skip_register and os.path.isdir(WAV_DIR) else []
 
-    audio_files = find_audio_files(SONGS_DIR)
-    wav_paths = []
-    for src in audio_files:
-        title, artist = extract_metadata(src)
-        slug = slugify(os.path.splitext(os.path.basename(src))[0])
-        wav_path = os.path.join(WAV_DIR, f"{slug}.wav")
-        ext = os.path.splitext(src)[1].lower()
-        if ext != ".wav":
-            print(f"  Converting: {os.path.basename(src)}")
-            convert_to_wav(src, wav_path)
-        else:
-            info = sf.info(src)
-            if info.samplerate == SAMPLE_RATE and info.channels == 1:
-                wav_path = src
-            else:
+    if not args.skip_register:
+        if os.path.exists(DB_PATH):
+            os.remove(DB_PATH)
+        create_db(DB_PATH)
+
+        audio_files = find_audio_files(SONGS_DIR)
+        for src in audio_files:
+            title, artist = extract_metadata(src)
+            slug = slugify(os.path.splitext(os.path.basename(src))[0])
+            wav_path = os.path.join(WAV_DIR, f"{slug}.wav")
+            ext = os.path.splitext(src)[1].lower()
+            if ext != ".wav":
+                print(f"  Converting: {os.path.basename(src)}")
                 convert_to_wav(src, wav_path)
-        register_song(title, artist, wav_path, db_path=DB_PATH)
-        wav_paths.append(wav_path)
+            else:
+                info = sf.info(src)
+                if info.samplerate == SAMPLE_RATE and info.channels == 1:
+                    wav_path = src
+                else:
+                    convert_to_wav(src, wav_path)
+            register_song(title, artist, wav_path, db_path=DB_PATH)
+            wav_paths.append(wav_path)
 
     print()
     list_songs(db_path=DB_PATH)
@@ -135,7 +147,7 @@ def main() -> None:
     print("=" * 60)
     print("STEP 2 — Building triplet dataset")
     print("=" * 60)
-    dataset = build_triplet_dataset(WAV_DIR, clips_per_song=10, augmentations_per_clip=5)
+    dataset = build_triplet_dataset(WAV_DIR, clips_per_song=3, augmentations_per_clip=3)
     verify_dataset(dataset, n_samples=3, save_path=os.path.join(ML_DIR, "dataset_verify.png"))
 
     # ------------------------------------------------------------------
@@ -149,11 +161,12 @@ def main() -> None:
         model.eval()
     else:
         model = train(
-            songs_dir=WAV_DIR,
+            gtzan_dir=os.path.join(ROOT, "data", "genres_original"),
             epochs=args.epochs,
-            batch_size=16,
+            batch_size=64,
             lr=1e-4,
             save_path=MODEL_PATH,
+            genres=["blues", "classical", "country", "disco", "hiphop", "jazz", "metal", "pop"],
         )
 
     # ------------------------------------------------------------------

@@ -1,13 +1,12 @@
 """
 ml/model.py — AudioEmbedder CNN and triplet training loop.
 
-Fine-tunes VGGish to produce 128-dim L2-normalised embeddings so that
-clips of the same song (even at different tempos) map to nearby vectors
-on the unit hypersphere.
+Custom 4-layer CNN that maps mel spectrograms to 128-dim L2-normalised
+embeddings. Trained with triplet loss so that clips of the same song
+(even at different tempos) map to nearby vectors on the unit hypersphere.
 """
 
 import os
-import random
 from typing import List
 
 import numpy as np
@@ -28,44 +27,45 @@ from config import SAMPLE_RATE
 # ---------------------------------------------------------------------------
 
 class AudioEmbedder(nn.Module):
-    """VGGish backbone fine-tuned to produce 128-dim L2-normalised embeddings.
+    """Custom CNN that maps mel spectrograms to 128-dim L2-normalised embeddings.
 
     Architecture:
-        VGGish (pretrained, lower layers frozen) → linear(128) → L2 norm
+        4 × (Conv2d → BatchNorm → ReLU → MaxPool) — feature extraction
+        AdaptiveAvgPool2d → flatten → Linear(512) → ReLU → Linear(128) → L2 norm
 
-    The forward pass accepts (batch, 1, 128, time_frames) mel spectrograms
-    and returns (batch, 128) unit-norm embedding vectors.
+    Accepts (batch, 1, 128, time_frames) mel spectrograms.
+    Returns (batch, 128) unit-norm vectors on the embedding hypersphere.
+    Cosine similarity (= dot product for unit vectors) is used at query time
+    via FAISS IndexFlatIP.
     """
 
     def __init__(self):
         super().__init__()
-        # Load VGGish from torch hub; suppress noisy download output
-        vggish = torch.hub.load(
-            "harritaylor/torchvggish", "vggish", pretrained=True, progress=False
+
+        def conv_block(in_ch, out_ch):
+            return nn.Sequential(
+                nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1, bias=False),
+                nn.BatchNorm2d(out_ch),
+                nn.ReLU(inplace=True),
+                nn.MaxPool2d(2, 2),
+            )
+
+        self.features = nn.Sequential(
+            conv_block(1,  32),   # → (batch, 32,  64, T/2)
+            conv_block(32, 64),   # → (batch, 64,  32, T/4)
+            conv_block(64, 128),  # → (batch, 128, 16, T/8)
+            conv_block(128, 256), # → (batch, 256,  8, T/16)
         )
 
-        # VGGish has .features (conv layers) and .embeddings (FC layers)
-        self.features = vggish.features
+        # Pool to fixed spatial size regardless of time_frames length
+        self.pool = nn.AdaptiveAvgPool2d((4, 4))  # → (batch, 256, 4, 4)
 
-        # Freeze all convolutional feature layers
-        for param in self.features.parameters():
-            param.requires_grad = False
-
-        # Keep the first FC block from VGGish embeddings (4096 → 4096),
-        # unfreeze only the last two FC layers
-        self.fc1 = vggish.embeddings[0]   # Linear(12288, 4096)
-        self.relu1 = vggish.embeddings[1]  # ReLU
-        self.fc2 = vggish.embeddings[3]   # Linear(4096, 4096)  [2] is dropout
-        self.relu2 = vggish.embeddings[4]  # ReLU
-
-        # Freeze fc1, unfreeze fc2
-        for param in self.fc1.parameters():
-            param.requires_grad = False
-        for param in self.fc2.parameters():
-            param.requires_grad = True
-
-        # New projection head: 4096 → 128
-        self.projection = nn.Linear(4096, 128)
+        self.embeddings = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(256 * 4 * 4, 512),
+            nn.ReLU(inplace=True),
+            nn.Linear(512, 128),
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Compute L2-normalised 128-dim embeddings.
@@ -76,14 +76,9 @@ class AudioEmbedder(nn.Module):
         Returns:
             Tensor of shape (batch, 128), unit-norm vectors.
         """
-        # Repeat single channel to 3 channels — VGGish conv layers expect 1-ch
-        # but were originally trained on log-mel which is single channel;
-        # we keep it as-is since VGGish features expect (batch, 1, freq, time)
-        out = self.features(x)           # (batch, C, H', W')
-        out = out.flatten(start_dim=1)   # (batch, C*H'*W')
-        out = self.relu1(self.fc1(out))  # (batch, 4096)
-        out = self.relu2(self.fc2(out))  # (batch, 4096)
-        out = self.projection(out)       # (batch, 128)
+        out = self.features(x)      # (batch, 256, 8, T/16)
+        out = self.pool(out)        # (batch, 256, 4, 4)
+        out = self.embeddings(out)  # (batch, 128)
         out = F.normalize(out, p=2, dim=1)  # L2 normalise → unit hypersphere
         return out
 
@@ -139,10 +134,11 @@ def get_model(model_path: str | None = None) -> AudioEmbedder:
 
 def train(
     gtzan_dir: str = "data/genres_original/",
-    epochs: int = 20,
-    batch_size: int = 16,
+    epochs: int = 5,
+    batch_size: int = 64,
     lr: float = 1e-4,
     save_path: str = "ml/embedder.pt",
+    genres: List[str] | None = None,
 ) -> AudioEmbedder:
     """Fine-tune AudioEmbedder using triplet loss on the GTZAN dataset.
 
@@ -158,12 +154,14 @@ def train(
         batch_size: Batch size for DataLoader.
         lr:         Adam learning rate.
         save_path:  Path to save the final model weights.
+        genres:     Optional list of genre names to train on. If None, all
+                    10 genres are used.
 
     Returns:
         Trained AudioEmbedder in eval() mode.
     """
-    entries = load_gtzan(gtzan_dir)
-    dataset = build_triplet_dataset(entries)
+    entries = load_gtzan(gtzan_dir, genres=genres)
+    dataset = build_triplet_dataset(entries, clips_per_song=3, augmentations_per_clip=3)
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=False)
 
     model = AudioEmbedder()
@@ -218,7 +216,7 @@ def train(
 
     # Training curves plot
     curves_path = os.path.join(os.path.dirname(save_path), "training_curves.png")
-    fig, ax1 = plt.subplots(figsize=(10, 5))
+    _, ax1 = plt.subplots(figsize=(10, 5))
     ax2 = ax1.twinx()
 
     ax1.plot(history_loss, color="steelblue", label="Triplet loss")
@@ -316,7 +314,7 @@ def evaluate_tempo_robustness(
         print(f"{name[:34]:<35} {row}")
 
     # Bar chart
-    fig, ax = plt.subplots(figsize=(11, 5))
+    _, ax = plt.subplots(figsize=(11, 5))
     x = np.arange(len(rates))
     width = 0.8 / max(len(all_similarities), 1)
 

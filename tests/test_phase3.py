@@ -80,11 +80,14 @@ def slugify(name: str) -> str:
 def extract_metadata(filepath: str):
     """Best-effort title/artist extraction from filename."""
     stem = os.path.splitext(os.path.basename(filepath))[0]
-    # Common pattern: "Artist - Title"
-    if " - " in stem:
-        parts = stem.split(" - ", 1)
-        return parts[1].strip(), parts[0].strip()
-    return stem, "Unknown"
+    # Handle both "Artist - Title" (original) and "Artist_-_Title" (slugified)
+    for sep in [" - ", "_-_"]:
+        if sep in stem:
+            parts = stem.split(sep, 1)
+            artist = parts[0].replace("_", " ").strip()
+            title = parts[1].replace("_", " ").strip()
+            return title, artist
+    return stem.replace("_", " "), "Unknown"
 
 
 def pipeline(audio, sr: int = SAMPLE_RATE):

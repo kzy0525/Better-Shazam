@@ -40,6 +40,7 @@ GTZAN_GENRES = [
 
 def load_gtzan(
     gtzan_dir: str = "data/genres_original/",
+    genres: List[str] | None = None,
 ) -> List[Tuple[str, str]]:
     """Scan the GTZAN dataset directory and return all (filepath, genre) tuples.
 
@@ -51,6 +52,8 @@ def load_gtzan(
 
     Args:
         gtzan_dir: Path to the genres_original/ folder.
+        genres:    Optional list of genre names to include. If None, all 10
+                   genres are loaded. E.g. ["blues", "classical", "rock"].
 
     Returns:
         List of (filepath, genre_label) tuples for all found WAV files.
@@ -62,10 +65,11 @@ def load_gtzan(
             "Download from: https://www.kaggle.com/datasets/andradaolteanu/gtzan-dataset-music-genre-classification"
         )
 
+    active_genres = genres if genres is not None else GTZAN_GENRES
     entries: List[Tuple[str, str]] = []
     counts: defaultdict[str, int] = defaultdict(int)
 
-    for genre in GTZAN_GENRES:
+    for genre in active_genres:
         genre_dir = os.path.join(gtzan_dir, genre)
         if not os.path.isdir(genre_dir):
             print(f"  Warning: genre folder not found — {genre_dir}")
@@ -76,7 +80,7 @@ def load_gtzan(
                 counts[genre] += 1
 
     print(f"GTZAN loaded — {len(entries)} files across {len(counts)} genres:")
-    for genre in GTZAN_GENRES:
+    for genre in active_genres:
         if genre in counts:
             print(f"  {genre:<12} {counts[genre]} files")
 
@@ -151,6 +155,11 @@ def augment_clip(
         augmented = augmented[:original_len]
     elif len(augmented) < original_len:
         augmented = np.pad(augmented, (0, original_len - len(augmented)))
+
+    # RoomSimulator can produce NaN/inf via fft convolution on bad RIRs —
+    # replace with the clean input so the clip is still usable
+    if not np.isfinite(augmented).all():
+        augmented = audio.copy()
 
     return augmented.astype(np.float32)
 

@@ -32,7 +32,6 @@ import torch
 import torch.nn.functional as F
 
 from fingerprint.database import register_song, create_db, list_songs
-from ml.dataset import build_triplet_dataset, verify_dataset, slice_audio, _to_spectrogram, _spec_to_tensor
 from ml.model import train, get_model, evaluate_tempo_robustness
 from ml.embeddings import build_faiss_index, query_faiss, visualize_embeddings
 from audio.capture import record
@@ -142,14 +141,6 @@ def main() -> None:
     list_songs(db_path=DB_PATH)
 
     # ------------------------------------------------------------------
-    # 2. Build triplet dataset + verify
-    # ------------------------------------------------------------------
-    print("=" * 60)
-    print("STEP 2 — Building triplet dataset")
-    print("=" * 60)
-    dataset = build_triplet_dataset(songs_dir=WAV_DIR)
-    verify_dataset(dataset, n_samples=3, save_path=os.path.join(ML_DIR, "dataset_verify.png"))
-
     # ------------------------------------------------------------------
     # 3. Train (or load) model
     # ------------------------------------------------------------------
@@ -161,13 +152,12 @@ def main() -> None:
         model.eval()
     else:
         model = train(
-            gtzan_dir=os.path.join(ROOT, "data", "genres_original"),
             songs_dir=WAV_DIR,
+            cache_dir=os.path.join(ML_DIR, "spectrogram_cache"),
             epochs=args.epochs,
             batch_size=64,
             lr=1e-4,
             save_path=MODEL_PATH,
-            genres=["blues", "classical", "country", "disco", "hiphop", "jazz", "metal", "pop"],
         )
 
     # ------------------------------------------------------------------

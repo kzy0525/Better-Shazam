@@ -14,11 +14,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+from torch.optim.lr_scheduler import CosineAnnealingLR
 import matplotlib.pyplot as plt
 import audiomentations as A
 import soundfile as sf
 
-from ml.dataset import build_triplet_dataset, load_gtzan, slice_audio, _to_spectrogram, _spec_to_tensor
+from ml.dataset import slice_audio, _to_spectrogram, _spec_to_tensor, build_spectrogram_cache, mine_triplets
 from config import SAMPLE_RATE
 
 
@@ -133,40 +134,39 @@ def get_model(model_path: str | None = None) -> AudioEmbedder:
 
 
 def train(
-    gtzan_dir: str = "data/genres_original/",
-    songs_dir: str | None = None,
-    epochs: int = 5,
+    songs_dir: str,
+    cache_dir: str = "ml/spectrogram_cache",
+    epochs: int = 15,
     batch_size: int = 64,
     lr: float = 1e-4,
     save_path: str = "ml/embedder.pt",
-    genres: List[str] | None = None,
 ) -> AudioEmbedder:
-    """Fine-tune AudioEmbedder using triplet loss on GTZAN plus an optional songs directory.
+    """Train AudioEmbedder using semi-hard negative mining on songs/ only.
 
-    Loads the GTZAN dataset via load_gtzan(), optionally adds songs from songs_dir
-    with higher clip/augmentation counts, builds a triplet dataset, then trains
-    with Adam and triplet loss.
-    Prints per-epoch mean loss and fraction of triplets where the model
-    correctly ordered anchor-positive closer than anchor-negative.
-    Saves a checkpoint every 5 epochs and a training curves plot at the end.
+    Spectrograms for all songs/ clips are preprocessed and cached to
+    cache_dir once (Demucs runs once per clip and never again). Each epoch
+    the triplet dataset is rebuilt using semi-hard negative mining against
+    the current model state so negatives get progressively harder.
+
+    A CosineAnnealingLR scheduler decays the learning rate from lr down to
+    1e-6 over the full training run, allowing large updates early and
+    fine-grained refinement in later epochs.
 
     Args:
-        gtzan_dir:  Path to the GTZAN genres_original/ folder.
-        songs_dir:  Optional path to a flat directory of WAV files (user song library).
-                    These get clips_per_file=6 and augmentations_per_clip=10.
-        epochs:     Number of training epochs.
+        songs_dir:  Directory of WAV files (22050 Hz mono).
+        cache_dir:  Directory to store preprocessed spectrogram .npy files.
+        epochs:     Number of training epochs (default 15).
         batch_size: Batch size for DataLoader.
-        lr:         Adam learning rate.
+        lr:         Initial Adam learning rate (decays to 1e-6 via cosine schedule).
         save_path:  Path to save the final model weights.
-        genres:     Optional list of genre names to train on. If None, all
-                    10 genres are used.
 
     Returns:
         Trained AudioEmbedder in eval() mode.
     """
-    entries = load_gtzan(gtzan_dir, genres=genres)
-    dataset = build_triplet_dataset(gtzan_source=entries, songs_dir=songs_dir)
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=False)
+    os.makedirs(os.path.dirname(save_path) if os.path.dirname(save_path) else ".", exist_ok=True)
+
+    # Build spectrogram cache (runs Demucs once per clip, skips existing files)
+    cache_entries = build_spectrogram_cache(songs_dir, cache_dir=cache_dir)
 
     model = AudioEmbedder()
     model.train()
@@ -174,13 +174,21 @@ def train(
     optimizer = torch.optim.Adam(
         filter(lambda p: p.requires_grad, model.parameters()), lr=lr
     )
-
-    os.makedirs(os.path.dirname(save_path) if os.path.dirname(save_path) else ".", exist_ok=True)
+    scheduler = CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-6)
 
     history_loss: List[float] = []
     history_frac: List[float] = []
+    history_lr: List[float] = []
 
     for epoch in range(1, epochs + 1):
+        # Rebuild triplets each epoch with semi-hard mining
+        mined_dataset = mine_triplets(
+            cache_entries, model, margin=0.3,
+            augmentations_per_clip=20, epoch=epoch,
+        )
+        loader = DataLoader(mined_dataset, batch_size=batch_size, shuffle=True, drop_last=False)
+        model.train()
+
         epoch_loss = 0.0
         correct = 0
         total = 0
@@ -203,12 +211,16 @@ def train(
             correct += (d_pos < d_neg).sum().item()
             total += len(anchor)
 
+        scheduler.step()
+        current_lr = scheduler.get_last_lr()[0]
+
         mean_loss = epoch_loss / total
         frac_correct = correct / total
         history_loss.append(mean_loss)
         history_frac.append(frac_correct)
+        history_lr.append(current_lr)
 
-        print(f"Epoch {epoch:3d}/{epochs}  loss={mean_loss:.4f}  correct={frac_correct:.3f}")
+        print(f"Epoch {epoch:3d}/{epochs}  loss={mean_loss:.4f}  correct={frac_correct:.3f}  lr={current_lr:.2e}")
 
         if epoch % 5 == 0:
             ckpt = save_path.replace(".pt", f"_epoch{epoch}.pt")
@@ -218,22 +230,31 @@ def train(
     torch.save(model.state_dict(), save_path)
     print(f"Final model saved: {save_path}")
 
-    # Training curves plot
+    # Training curves — loss, fraction correct, and learning rate
     curves_path = os.path.join(os.path.dirname(save_path), "training_curves.png")
-    _, ax1 = plt.subplots(figsize=(10, 5))
+    x = list(range(1, epochs + 1))
+    _, ax1 = plt.subplots(figsize=(11, 5))
     ax2 = ax1.twinx()
+    ax3 = ax1.twinx()
+    ax3.spines["right"].set_position(("axes", 1.12))
 
-    ax1.plot(history_loss, color="steelblue", label="Triplet loss")
-    ax2.plot(history_frac, color="darkorange", label="Fraction correct")
+    ax1.plot(x, history_loss, color="steelblue", label="Triplet loss")
+    ax2.plot(x, history_frac, color="darkorange", label="Fraction correct")
+    ax3.plot(x, history_lr, color="seagreen", linestyle="--", label="Learning rate")
 
     ax1.set_xlabel("Epoch")
     ax1.set_ylabel("Loss", color="steelblue")
     ax2.set_ylabel("Fraction correct", color="darkorange")
+    ax3.set_ylabel("Learning rate", color="seagreen")
     ax1.set_title("Training Curves — AudioEmbedder", fontweight="bold")
 
-    lines1, labels1 = ax1.get_legend_handles_labels()
-    lines2, labels2 = ax2.get_legend_handles_labels()
-    ax1.legend(lines1 + lines2, labels1 + labels2, loc="center right")
+    lines = (ax1.get_legend_handles_labels()[0]
+             + ax2.get_legend_handles_labels()[0]
+             + ax3.get_legend_handles_labels()[0])
+    labels = (ax1.get_legend_handles_labels()[1]
+              + ax2.get_legend_handles_labels()[1]
+              + ax3.get_legend_handles_labels()[1])
+    ax1.legend(lines, labels, loc="center right")
 
     plt.tight_layout()
     plt.savefig(curves_path, dpi=150)

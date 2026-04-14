@@ -20,6 +20,7 @@ from typing import List, Tuple
 import numpy as np
 import soundfile as sf
 import torch
+import torch.nn.functional as F
 from torch.utils.data import Dataset
 import audiomentations as A
 import matplotlib.pyplot as plt
@@ -95,22 +96,50 @@ def slice_audio(
     audio: np.ndarray,
     sr: int = SAMPLE_RATE,
     clip_length: float = 5.0,
+    n_clips: int | None = None,
+    debug_name: str | None = None,
 ) -> List[np.ndarray]:
-    """Slice a numpy audio array into non-overlapping fixed-length clips.
+    """Slice a numpy audio array into fixed-length clips, evenly spaced across the song.
+
+    When n_clips is specified and the song is long enough, clips are sampled
+    evenly across the full duration (intro, verse, chorus, bridge, outro) rather
+    than sequentially from the start. If the song is shorter than
+    n_clips * clip_length seconds, all available non-overlapping clips are returned.
 
     Args:
         audio:       1-D float32 numpy array (mono).
         sr:          Sample rate in Hz.
         clip_length: Desired clip length in seconds.
+        n_clips:     Number of evenly spaced clips to return. If None, all
+                     non-overlapping clips are returned.
+        debug_name:  If provided, prints the selected clip start times in
+                     seconds for verification.
 
     Returns:
         List of 1-D float32 numpy arrays, each exactly clip_length * sr samples.
-        The last clip is discarded if it would be shorter than clip_length.
     """
     clip_samples = int(clip_length * sr)
+    total_available = len(audio) // clip_samples
+
+    if total_available == 0:
+        return []
+
+    if n_clips is None or total_available <= n_clips:
+        # Return all non-overlapping clips sequentially
+        indices = list(range(total_available))
+    else:
+        # Evenly space n_clips across all available clip positions
+        indices = [int(x) for x in np.linspace(0, total_available - 1, n_clips)]
+
     clips = []
-    for start in range(0, len(audio) - clip_samples + 1, clip_samples):
+    for idx in indices:
+        start = idx * clip_samples
         clips.append(audio[start : start + clip_samples].copy())
+
+    if debug_name is not None:
+        times = [f"{idx * clip_length:.1f}s" for idx in indices]
+        print(f"  Clip start times for {debug_name}: [{', '.join(times)}]")
+
     return clips
 
 
@@ -122,10 +151,13 @@ def _build_augmenter(sr: int = SAMPLE_RATE) -> A.Compose:
     """Build the audiomentations augmentation composition."""
     return A.Compose([
         A.AddGaussianNoise(min_amplitude=0.001, max_amplitude=0.015, p=0.5),
+        A.AddColorNoise(p=0.4),
         A.TimeStretch(min_rate=0.80, max_rate=1.20, p=0.8),
         A.PitchShift(min_semitones=-2, max_semitones=2, p=0.3),
-        A.RoomSimulator(p=0.4),
+        A.RoomSimulator(p=0.6),
         A.LowPassFilter(min_cutoff_freq=4000, max_cutoff_freq=8000, p=0.3),
+        A.Mp3Compression(min_compression_rate=8, max_compression_rate=64, p=0.4),
+        A.TanhDistortion(p=0.3),
     ])
 
 
@@ -217,8 +249,8 @@ def build_triplet_dataset(
     songs_dir: str | None = None,
     gtzan_clips_per_file: int = 3,
     gtzan_augmentations_per_clip: int = 3,
-    songs_clips_per_file: int = 6,
-    songs_augmentations_per_clip: int = 10,
+    songs_clips_per_file: int = 10,
+    songs_augmentations_per_clip: int = 20,
 ) -> TripletAudioDataset:
     """Build a triplet dataset from GTZAN entries and/or a local songs directory.
 
@@ -273,11 +305,12 @@ def build_triplet_dataset(
         raise ValueError(f"Need at least 2 files total, got {len(tagged)}.")
 
     # Load clips for each entry, applying per-source limits
-    print(f"Loading clips from {len(tagged)} files "
-          f"({sum(1 for _, _, s in tagged if s == 'gtzan')} GTZAN, "
-          f"{sum(1 for _, _, s in tagged if s == 'songs')} songs/)...")
+    n_gtzan = sum(1 for _, _, s in tagged if s == "gtzan")
+    n_songs = sum(1 for _, _, s in tagged if s == "songs")
+    print(f"Loading clips from {len(tagged)} files ({n_gtzan} GTZAN, {n_songs} songs/)...")
 
     index_to_clips: dict[int, List[np.ndarray]] = {}
+    first_processed = True
     for i, (path, _, source) in enumerate(tagged):
         limit = gtzan_clips_per_file if source == "gtzan" else songs_clips_per_file
         try:
@@ -287,12 +320,11 @@ def build_triplet_dataset(
             continue
         if audio.ndim > 1:
             audio = audio.mean(axis=1)
-        clips = slice_audio(audio, sr=sr)
+        name = os.path.splitext(os.path.basename(path))[0] if first_processed else None
+        clips = slice_audio(audio, sr=sr, n_clips=limit, debug_name=name)
+        first_processed = False
         if not clips:
             continue
-        if len(clips) > limit:
-            idxs = np.linspace(0, len(clips) - 1, limit, dtype=int)
-            clips = [clips[j] for j in idxs]
         index_to_clips[i] = clips
 
     valid_indices = list(index_to_clips.keys())
@@ -334,7 +366,7 @@ def build_triplet_dataset(
         for clip in anchor_clips:
             anchor_spec = _to_spectrogram(clip)
             for _ in range(aug_count):
-                pos_audio = augment_clip(clip)
+                pos_audio = augment_clip(augment_clip(clip))
                 positive_spec = _to_spectrogram(pos_audio)
 
                 neg_idx = random.choice(neg_pool)
@@ -360,6 +392,202 @@ def build_triplet_dataset(
           f"× {songs_augmentations_per_clip} aug)")
     print(f"  Total         : {len(triplets)} triplets")
 
+    return TripletAudioDataset(triplets)
+
+
+# ---------------------------------------------------------------------------
+# Spectrogram cache
+# ---------------------------------------------------------------------------
+
+def build_spectrogram_cache(
+    songs_dir: str,
+    cache_dir: str = "ml/spectrogram_cache",
+    clip_length: float = 5.0,
+    n_clips: int = 10,
+) -> List[Tuple[str, int, str]]:
+    """Preprocess and cache mel spectrograms for all songs/ clips.
+
+    Runs the full preprocessing pipeline (Demucs → Wiener → bandpass →
+    mel spectrogram) on each clip once and saves each result as a .npy
+    file. Skips clips whose cache file already exists. This avoids
+    re-running Demucs on every training run.
+
+    Args:
+        songs_dir:   Directory of WAV files (22050 Hz mono).
+        cache_dir:   Directory to store .npy spectrogram files.
+        clip_length: Clip duration in seconds (must match training).
+        n_clips:     Number of evenly spaced clips per song.
+
+    Returns:
+        List of (song_name, clip_index, cache_path) tuples for all cached clips.
+    """
+    # Import here to avoid circular imports at module level
+    from audio.preprocess import full_preprocess_pipeline
+
+    os.makedirs(cache_dir, exist_ok=True)
+
+    wav_files = sorted([
+        os.path.join(songs_dir, f)
+        for f in os.listdir(songs_dir)
+        if f.lower().endswith(".wav")
+    ])
+
+    entries = []   # (song_name, clip_idx, cache_path)
+    n_cached = 0
+    n_skipped = 0
+
+    print(f"Building spectrogram cache for {len(wav_files)} songs → {cache_dir}")
+
+    for wav_path in wav_files:
+        song_name = os.path.splitext(os.path.basename(wav_path))[0]
+
+        try:
+            audio, sr = sf.read(wav_path, dtype="float32")
+        except Exception as e:
+            print(f"  Skipping {wav_path}: {e}")
+            continue
+        if audio.ndim > 1:
+            audio = audio.mean(axis=1)
+
+        clips = slice_audio(audio, sr=sr, clip_length=clip_length, n_clips=n_clips)
+
+        for clip_idx, clip in enumerate(clips):
+            cache_path = os.path.join(cache_dir, f"{song_name}_{clip_idx}.npy")
+            entries.append((song_name, clip_idx, cache_path))
+
+            if os.path.exists(cache_path):
+                n_skipped += 1
+                continue
+
+            # Full preprocessing on the raw clip, then spectrogram
+            processed = full_preprocess_pipeline(clip, sample_rate=sr)
+            spec = _to_spectrogram(processed, sr)
+            np.save(cache_path, spec)
+            n_cached += 1
+
+    print(f"  Cached: {n_cached} new clips, {n_skipped} already existed "
+          f"({n_cached + n_skipped} total)")
+    return entries
+
+
+# ---------------------------------------------------------------------------
+# Semi-hard negative mining
+# ---------------------------------------------------------------------------
+
+def mine_triplets(
+    cache_entries: List[Tuple[str, int, str]],
+    model,
+    margin: float = 0.3,
+    augmentations_per_clip: int = 20,
+    epoch: int = 1,
+) -> TripletAudioDataset:
+    """Build a triplet dataset using semi-hard negative mining.
+
+    At the start of each epoch, embeds all cached spectrograms with the
+    current model, then for each anchor finds:
+      - A positive: an augmented version of the same clip
+      - A semi-hard negative: a clip from a different song where
+            d(a, p) < d(a, n) < d(a, p) + margin
+        Falls back to the hardest available negative (smallest d(a, n))
+        if no semi-hard negative exists.
+
+    Args:
+        cache_entries:          List of (song_name, clip_idx, cache_path) from
+                                build_spectrogram_cache().
+        model:                  AudioEmbedder in any training state — will be
+                                temporarily set to eval() for embedding, then
+                                restored to train() after.
+        margin:                 Triplet loss margin (must match training margin).
+        augmentations_per_clip: Number of augmented positives per anchor clip.
+        epoch:                  Current epoch number, used for logging only.
+
+    Returns:
+        TripletAudioDataset with freshly mined triplets.
+    """
+    was_training = model.training
+    model.eval()
+
+    # Embed all cached clips
+    all_specs: List[np.ndarray] = []
+    all_names: List[str] = []
+    valid_entries: List[Tuple[str, int, str]] = []
+
+    for song_name, clip_idx, cache_path in cache_entries:
+        if not os.path.exists(cache_path):
+            continue
+        spec = np.load(cache_path)
+        all_specs.append(spec)
+        all_names.append(song_name)
+        valid_entries.append((song_name, clip_idx, cache_path))
+
+    if len(valid_entries) < 2:
+        raise ValueError("Need at least 2 cached clips for mining.")
+
+    with torch.no_grad():
+        tensors = torch.stack([_spec_to_tensor(s) for s in all_specs])  # (N, 1, H, W)
+        embeddings = model(tensors)                                       # (N, 128)
+
+    unique_songs = list(dict.fromkeys(all_names))
+
+    # Per-song index sets
+    song_to_indices: dict[str, List[int]] = defaultdict(list)
+    for i, name in enumerate(all_names):
+        song_to_indices[name].append(i)
+
+    triplets: List[Tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+    neg_distances: List[float] = []
+
+    for anchor_i, (song_name, _, cache_path) in enumerate(valid_entries):
+        anchor_emb = embeddings[anchor_i]
+        anchor_spec = all_specs[anchor_i]
+
+        # Indices belonging to a different song
+        neg_indices = [j for j in range(len(valid_entries)) if all_names[j] != song_name]
+        if not neg_indices:
+            continue
+
+        # Distance to anchor's own augmented positive — approximate with d=0
+        # (same clip, so d_pos ≈ small). Compute properly from a quick augment.
+        pos_audio_raw = np.load(cache_path)  # already a spectrogram — skip, use anchor
+        # d_pos is estimated as 0 for mining purposes; semi-hard condition becomes
+        # 0 < d(a, n) < margin, i.e. negatives inside the margin but further than anchor
+        d_pos = 0.0
+
+        neg_embs = embeddings[neg_indices]
+        dists = F.pairwise_distance(anchor_emb.unsqueeze(0).expand_as(neg_embs), neg_embs)
+        dists_np = dists.cpu().numpy()
+
+        # Semi-hard: d_pos < d_neg < d_pos + margin
+        semi_hard_mask = (dists_np > d_pos) & (dists_np < d_pos + margin)
+        if semi_hard_mask.any():
+            # Pick randomly among semi-hard negatives
+            candidates = [neg_indices[k] for k in np.where(semi_hard_mask)[0]]
+            neg_i = random.choice(candidates)
+        else:
+            # Fall back to hardest negative (smallest distance)
+            neg_i = neg_indices[int(np.argmin(dists_np))]
+
+        neg_distances.append(float(dists_np[[neg_indices.index(neg_i)]]))
+        neg_spec = all_specs[neg_i]
+
+        # Generate augmented positives
+        for _ in range(augmentations_per_clip):
+            # Augment from the raw WAV clip: reload and augment
+            pos_raw = anchor_spec.flatten()[:int(5.0 * SAMPLE_RATE)].astype(np.float32)
+            pos_aug = augment_clip(augment_clip(pos_raw))
+            pos_spec = _to_spectrogram(pos_aug)
+            triplets.append((anchor_spec, pos_spec, neg_spec))
+
+    if model.training != was_training:
+        model.train() if was_training else model.eval()
+    if was_training:
+        model.train()
+
+    avg_neg_dist = float(np.mean(neg_distances)) if neg_distances else 0.0
+    print(f"  Epoch {epoch} — avg negative distance: {avg_neg_dist:.3f}  "
+          f"({len(triplets)} mined triplets)")
+
+    random.shuffle(triplets)
     return TripletAudioDataset(triplets)
 
 

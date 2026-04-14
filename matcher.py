@@ -7,6 +7,7 @@ into a single confidence-weighted decision.
 """
 
 import os
+import re
 import threading
 from typing import Optional, Tuple
 
@@ -62,10 +63,12 @@ def match(
             spec = compute_mel_spectrogram(cleaned, sr=sr)
             peaks = extract_peaks(spec, sr=sr)
             hashes = generate_hashes(peaks)
-            result = query_db(hashes, db_path=db_path)
+            result = query_db(hashes, db_path=db_path, min_confidence=1)
             if result:
                 _, title, artist, confidence = result
-                classical_result[0] = (title, artist, confidence)
+                print(f"  Classical raw: '{title}' confidence={confidence}")
+                if confidence >= 5:
+                    classical_result[0] = (title, artist, confidence)
         except Exception as e:
             print(f"  Classical path error: {e}")
 
@@ -93,53 +96,66 @@ def match(
     t_classical.join()
     t_ml.join()
 
+    def _normalize(s: str) -> str:
+        """Lowercase, strip punctuation, collapse whitespace for title comparison."""
+        s = s.lower()
+        s = re.sub(r"[^\w\s]", "", s)
+        return re.sub(r"\s+", " ", s).strip()
+
     # -----------------------------------------------------------------------
     # Report individual path results
     # -----------------------------------------------------------------------
     print("\n--- Path Results ---")
 
-    c_title, c_artist = None, None
+    c_title, c_artist, c_conf = None, None, 0
     if classical_result[0]:
         c_title, c_artist, c_conf = classical_result[0]
         print(f"  Classical : '{c_title}' by {c_artist}  (confidence={c_conf})")
     else:
         print("  Classical : no match")
 
-    ml_title, ml_artist, ml_score = None, None, 0.0
     if ml_result[0]:
-        ml_title, ml_artist, ml_score = ml_result[0][0]
-        print(f"  ML        : '{ml_title}' by {ml_artist}  (similarity={ml_score:.3f})")
-        if len(ml_result[0]) > 1:
-            for title, artist, score in ml_result[0][1:]:
-                print(f"              '{title}' by {artist}  (similarity={score:.3f})")
+        ml_top_title, ml_top_artist, ml_top_score = ml_result[0][0]
+        print(f"  ML        : '{ml_top_title}' by {ml_top_artist}  (similarity={ml_top_score:.3f})")
+        for title, artist, score in ml_result[0][1:]:
+            print(f"              '{title}' by {artist}  (similarity={score:.3f})")
     else:
-        print("  ML        : no match")
+        ml_top_title, ml_top_artist, ml_top_score = None, None, 0.0
 
     # -----------------------------------------------------------------------
-    # Combine
+    # Combine — check if classical matches any of the top 3 ML results
     # -----------------------------------------------------------------------
-    ML_HIGH_CONFIDENCE_THRESHOLD = 0.7
+    ML_HIGH_SIMILARITY = 0.70
 
     print("\n--- Final Decision ---")
 
-    both_matched = c_title is not None and ml_title is not None
-    titles_agree = both_matched and c_title.lower() == ml_title.lower()
+    ml_match_position = None  # 0-indexed position in ML top-3 where classical agrees
+    ml_match_score = 0.0
+    if c_title is not None and ml_result[0]:
+        c_norm = _normalize(c_title)
+        for pos, (ml_t, _, ml_s) in enumerate(ml_result[0]):
+            if _normalize(ml_t) == c_norm:
+                ml_match_position = pos
+                ml_match_score = ml_s
+                break
 
-    if titles_agree and ml_score >= ML_HIGH_CONFIDENCE_THRESHOLD:
+    if ml_match_position == 0 and ml_match_score >= ML_HIGH_SIMILARITY:
         label = "HIGH CONFIDENCE — both paths agree"
         title, artist = c_title, c_artist
-    elif titles_agree:
-        # Paths agree but ML similarity is weak — still a match, just less certain
+    elif ml_match_position == 0:
         label = "MODERATE CONFIDENCE — paths agree, low ML similarity"
         title, artist = c_title, c_artist
-    elif c_title is not None and ml_title is None:
+    elif ml_match_position in (1, 2):
+        label = "MODERATE CONFIDENCE — classical confirmed by ML"
+        title, artist = c_title, c_artist
+    elif c_title is not None and ml_top_title is None:
         label = "MODERATE CONFIDENCE — classical only"
         title, artist = c_title, c_artist
-    elif ml_title is not None and c_title is None:
+    elif ml_top_title is not None and c_title is None:
         label = "MODERATE CONFIDENCE — ML only"
-        title, artist = ml_title, ml_artist
-    elif both_matched and not titles_agree:
-        # Both matched but disagreed — trust classical (more precise)
+        title, artist = ml_top_title, ml_top_artist
+    elif c_title is not None and ml_top_title is not None:
+        # Both returned results but none of the top 3 ML results matched classical
         label = "LOW CONFIDENCE — paths disagree (classical result returned)"
         title, artist = c_title, c_artist
     else:
@@ -148,4 +164,4 @@ def match(
 
     print(f"  {title} by {artist}")
     print(f"  {label}")
-    return (title, artist, label)
+    return title, artist, label

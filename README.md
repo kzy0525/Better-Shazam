@@ -1,6 +1,6 @@
 # Better Shazam — Audio Fingerprinting System
 
-A from-scratch audio identification system that replicates Shazam's core functionality, but better. 
+A from-scratch audio identification system that replicates Shazam's core functionality, but better.
 
 Shazam identifies songs by converting audio into a spectrogram and matching frequency patterns against a database. This project replicates that pipeline from scratch, then extends it with a custom-trained neural network to handle noise and tempo-shifted audio that classical fingerprinting cannot identify.
 
@@ -8,65 +8,185 @@ Shazam identifies songs by converting audio into a spectrogram and matching freq
 
 ## What It Does
 
-Given a 10-second recording from your microphone, the system identifies which song is playing and returns the title, artist, and a confidence level.
+Given a 10-second microphone recording, the system identifies which song
+is playing and returns the title, artist, and a confidence level.
 
-It runs two identification paths simultaneously and combines their results:
+Two identification paths run simultaneously and cross-validate each other:
 
-- **Classical path** — extracts spectrogram peaks from the audio, hashes pairs of peaks into fingerprints, and looks them up in a SQLite database using a time-coherence voting algorithm. Fast and precise for clean audio.
-- **ML path** — runs the audio through a trained CNN that maps mel spectrograms to 128-dimensional embedding vectors, then searches a FAISS index for the nearest match using cosine similarity. Robust to background noise and tempo shifts that break the classical path.
+- **Classical path** — extracts spectrogram peaks, hashes peak pairs into
+fingerprints, and matches them against a SQLite database using a
+time-coherence voting algorithm. Fast and precise for clean audio.
+- **ML path** — runs audio through a trained CNN that maps mel spectrograms
+to 128-dimensional embedding vectors, then searches a FAISS index by cosine
+similarity. Robust to background noise and tempo shifts that break the
+classical path.
 
----
-
-## How It Works
-
-### Audio Pipeline
-Raw microphone input is captured at 22050 Hz mono and passed through a two-stage noise removal pipeline before any fingerprinting occurs:
-
-1. **Demucs source separation** — a pretrained neural network (htdemucs) separates the audio into stems (drums, bass, vocals, other) and recombines them. Anything that doesn't fit a musical stem — crowd noise, background talking, environmental sounds — is discarded.
-2. **Wiener filter** — removes residual stationary noise (hiss, hum) left over after stem separation.
-3. **Butterworth bandpass filter** (80–8000 Hz) — removes sub-bass rumble and high-frequency artifacts outside the musically relevant range.
-
-### Classical Fingerprinting (Phase 3)
-The cleaned audio is converted to a mel spectrogram (128 bins, STFT with n_fft=2048, hop=512). Local maxima are extracted as sparse peak points. Each anchor peak is paired with up to 15 nearby target peaks, and each pair is SHA-1 hashed into a 32-bit fingerprint encoding `(anchor_freq, target_freq, time_delta)`.
-
-At query time, the snippet's hashes are looked up in SQLite and matched against the database using a time-offset coherence histogram — a genuine match produces many hashes that agree on the same playback position delta, while false positives scatter randomly.
-
-### ML Embeddings (Phase 5)
-A custom 4-layer CNN maps mel spectrograms to 128-dimensional L2-normalised embedding vectors. The model is trained with triplet loss on the GTZAN dataset (8 genres, 800 files): anchor clips are paired with augmented versions of the same clip as positives (including ±20% tempo shifts via TimeStretch) and clips from different genres as negatives.
-
-Song embeddings are pre-computed and stored in a FAISS IndexFlatIP. At query time the snippet embedding is computed and the nearest neighbors are returned by cosine similarity.
-
-**Key result:** the ML path correctly identifies songs at ±20% tempo shift with >0.93 cosine similarity — a case the classical path fundamentally cannot handle.
+The final result combines both paths:
+- **HIGH CONFIDENCE** — both paths agree
+- **MODERATE CONFIDENCE** — one path confirms the other
+- **LOW CONFIDENCE** — paths disagree, classical result returned
 
 ---
 
-## Training Results
+## System Pipeline
 
-The model was trained on the GTZAN dataset (800 files across 8 genres). The 4 songs in `test_songs/` were not used during training — they serve as the held-out evaluation set to measure real-world identification performance.
+```
+Microphone
+↓
+Demucs source separation      — removes background noise, crowd, talking
+↓
+Wiener filter                 — removes residual stationary hiss/hum
+↓
+Butterworth bandpass (80–8000 Hz)
+↓
+Mel spectrogram (128 bins, STFT n_fft=2048, hop=512)
+↓
+├── Classical path: peak extraction → SHA-1 hashing → SQLite lookup
+└── ML path: CNN → 128-dim embedding → FAISS nearest neighbor
+↓
+Song title + artist + confidence
+```
 
+---
 
-| Epoch | Loss   | Fraction Correct |
-|-------|--------|-----------------|
-| 1     | 0.0039 | 0.998           |
-| 2     | 0.0006 | 1.000           |
-| 3     | 0.0003 | 1.000           |
-| 4     | 0.0002 | 1.000           |
-| 5     | 0.0002 | 1.000           |
+## Audio Preprocessing
+
+Raw microphone input is captured at 22050 Hz mono and passed through a
+three-stage noise removal pipeline:
+
+1. **Demucs (htdemucs)** — a pretrained neural source separation model that
+splits audio into stems (drums, bass, vocals, other) and recombines them.
+Non-musical content like crowd noise and background conversation is
+discarded because it has no stem to land in.
+2. **Wiener filter** — removes residual stationary noise left after stem
+separation using statistical noise floor estimation.
+3. **Butterworth bandpass filter** (80–8000 Hz) — removes sub-bass rumble
+and ultrasonic artifacts outside the musically relevant range.
+
+The same pipeline is applied identically to both song registration and query
+audio to ensure fingerprint consistency.
+
+---
+
+## Classical Fingerprinting
+
+The cleaned audio is converted to a mel spectrogram. Local maxima are
+extracted as sparse peak points using a 20×20 neighborhood maximum filter
+with a frequency ceiling at mel bin 100 to reduce artifacts.
+
+Each anchor peak is paired with up to 15 nearby target peaks within a
+sliding time window. Each pair is SHA-1 hashed into a 32-bit fingerprint
+encoding `(anchor_freq, target_freq, time_delta)` and stored in SQLite with
+an index on hash for O(1) lookup.
+
+At query time, matching hashes are retrieved and grouped by candidate song.
+A genuine match produces many hashes that agree on the same
+`db_offset − query_offset` delta — confirmed by a time-coherence histogram.
+False positives produce random, incoherent deltas and are rejected.
+
+---
+
+## ML Embeddings
+
+### Architecture
+
+A custom 4-layer CNN maps mel spectrograms to 128-dimensional
+L2-normalised embedding vectors:
+
+```
+Conv2d → BatchNorm → ReLU → MaxPool  (×4)
+↓
+AdaptiveAvgPool
+↓
+Linear → 128-dim output
+↓
+L2 normalisation
+```
+
+### Training
+
+The model is trained using **triplet loss with semi-hard negative mining**:
+
+- **Anchor** — a clean 5-second clip from a song in the database
+- **Positive** — an augmented version of the same clip
+- **Negative** — the most confusable clip from a different song, selected
+by finding semi-hard negatives satisfying:
+  `d(anchor, positive) < d(anchor, negative) < d(anchor, positive) + margin`
+
+Negatives are re-mined at the start of each epoch using the current model
+state, so difficulty increases automatically as the model improves.
+
+**Augmentation pipeline applied to positive clips:**
+- TimeStretch ±20% (tempo variation)
+- AddGaussianNoise
+- AddColorNoise
+- RoomSimulator (reverb)
+- LowPassFilter (speaker simulation)
+- TanhDistortion (speaker distortion)
+- Applied twice per clip for heavier distortion
+
+**Training configuration:**
+- Dataset: 20 songs × 10 evenly-spaced clips × 20 augmentations = 4,000
+triplets per epoch
+- Clips are sampled evenly across the full song duration to cover intro,
+verse, chorus, bridge, and outro
+- Epochs: 15 with CosineAnnealingLR (1e-4 → 1e-6)
+- Spectrogram cache: Demucs preprocessing is cached to disk before training
+to avoid reprocessing audio 15 times per clip
+- Optimizer: Adam, lr=1e-4
+
+### Training Curves
+
+![Training Curves](ml/training_curves.png)
+
+*Triplet loss, fraction correct, and learning rate decay over 15 epochs.
+The oscillating pattern reflects hard negative mining regenerating harder
+triplets each epoch as the model improves. Fraction correct ends at 0.899.*
+
+| Epoch | Avg Neg Distance | Loss | Correct | LR |
+|-------|-----------------|------|---------|-----|
+| 1 | 0.153 | 0.065 | 0.920 | 9.89e-05 |
+| 3 | 0.529 | 0.103 | 0.864 | 9.05e-05 |
+| 5 | 0.518 | 0.116 | 0.851 | 7.52e-05 |
+| 8 | 0.555 | 0.109 | 0.866 | 4.53e-05 |
+| 11 | 0.628 | 0.089 | 0.904 | 1.74e-05 |
+| 15 | 0.687 | 0.126 | 0.899 | 1.00e-06 |
 
 ### Tempo Robustness
 
-The 4 songs in `test_songs/` were used to evaluate how well the model holds up when the same song plays at a different speed. Each song was run through the ML path at 5 tempo rates and compared against its own clean-speed embedding.
+![Tempo Robustness](ml/tempo_robustness.png)
 
-Cosine similarity between a clean anchor clip and tempo-shifted versions:
+*Cosine similarity between clean anchor embeddings and tempo-shifted
+versions at 0.80x–1.20x across all 20 database songs. Red dashed line
+shows the 0.85 target threshold.*
 
-| Song | 0.80x | 0.90x | 1.00x | 1.10x | 1.20x |
-|------|-------|-------|-------|-------|-------|
-| Aespa - Whiplash | 0.930 | 0.973 | 1.000 | 0.974 | 0.953 |
-| Katy Perry - California Gurls | 0.937 | 0.975 | 1.000 | 0.981 | 0.966 |
-| Tchaikovsky - Piano Concerto 1 | 0.985 | 0.995 | 1.000 | 0.995 | 0.984 |
-| The Weeknd - Save Your Tears | 0.970 | 0.988 | 1.000 | 0.985 | 0.968 |
+The ML path correctly identifies songs at tempo shifts that completely
+break classical fingerprinting — hash time deltas change with tempo,
+making classical matching impossible at any significant speed variation.
 
-All songs scored above 0.93 at ±20% tempo shift. Target threshold: 0.85.
+### Embedding Space
+
+![PCA Embedding Space](ml/embeddings_pca.png)
+
+*PCA projection of 128-dimensional song embeddings to 2D (29.1% + 13.6%
+variance explained). Acoustically distinct songs such as Tchaikovsky and
+Save Your Tears show clear spatial separation. Similar-genre songs cluster
+together as expected — this reflects genuine acoustic similarity rather
+than a model failure.*
+
+---
+
+## Dual-Path Matcher
+
+Both paths run in parallel via Python threading. Results are combined:
+
+| Condition | Output |
+|---|---|
+| Both paths agree, ML similarity > 0.70 | HIGH CONFIDENCE |
+| Classical in ML top 3 | MODERATE CONFIDENCE — classical confirmed by ML |
+| ML only match | MODERATE CONFIDENCE — ML only |
+| Classical only, confidence > 35 | CONFIDENT — strong classical match |
+| Neither matches | NO MATCH |
 
 ---
 
@@ -75,127 +195,133 @@ All songs scored above 0.93 at ±20% tempo shift. Target threshold: 0.85.
 ```
 Better-Shazam/
 ├── audio/
-│   ├── capture.py          # Microphone recording
-│   └── preprocess.py       # Demucs + Wiener + bandpass pipeline
+│   ├── capture.py           # Microphone recording + noise profiling
+│   └── preprocess.py        # Demucs + Wiener + bandpass pipeline
 ├── fingerprint/
-│   ├── spectrogram.py      # Mel spectrogram + peak extraction
-│   ├── hash.py             # Peak pairing and SHA-1 hashing
-│   └── database.py         # SQLite fingerprint store
+│   ├── spectrogram.py       # Mel spectrogram + peak extraction
+│   ├── hash.py              # Peak pairing and SHA-1 hashing
+│   └── database.py          # SQLite fingerprint store + registration
 ├── ml/
-│   ├── dataset.py          # GTZAN loader + triplet dataset builder
-│   ├── model.py            # CNN architecture + triplet training loop
-│   └── embeddings.py       # FAISS index build, query, and visualisation
-├── matcher.py              # Dual-path matcher (classical + ML, threaded)
-├── main.py                 # Entry point — record and identify
-├── config.py               # Shared constants
-├── test_songs/             # Your local song library (MP3/WAV)
-└── data/
-    └── genres_original/    # GTZAN dataset (not committed)
+│   ├── dataset.py           # Triplet dataset builder + hard negative mining
+│   ├── model.py             # CNN architecture + training loop
+│   └── embeddings.py        # FAISS index build, query, visualisation
+├── matcher.py               # Dual-path matcher (threaded)
+├── main.py                  # Entry point
+├── test_songs/              # Your song library (WAV/MP3 files)
+└── ml/spectrogram_cache/    # Precomputed spectrograms for training
 ```
 
 ---
 
 ## Setup
 
-### 1. Install dependencies
+### 1. Clone and install dependencies
 
 ```bash
+git clone https://github.com/yourname/Better-Shazam
+cd Better-Shazam
 pip install -r requirements.txt
-pip install pyroomacoustics
+brew install ffmpeg   # macOS, required for audio conversion
 ```
 
-You also need ffmpeg for MP3 conversion:
+### 2. Add songs to identify
+
+Drop WAV or MP3 files into the `test_songs/` folder named `Artist - Title.mp3`.
+These are the songs the system will be able to identify.
+
+### 3. Register songs and train
 
 ```bash
-brew install ffmpeg   # macOS
+python tests/test_phase5.py
 ```
 
-### 2. Download the GTZAN dataset (required for ML training only)
+This will:
+1. Convert all files in `test_songs/` to 22050 Hz mono WAV and register them in SQLite
+2. Build a spectrogram cache for all songs using Demucs (runs once, cached to `ml/spectrogram_cache/`)
+3. Build 4,000 triplets per epoch using semi-hard negative mining
+4. Train for 15 epochs with cosine LR decay
+5. Save weights to `ml/embedder.pt` and generate `ml/training_curves.png`
+6. Build the FAISS index
+7. Run tempo robustness evaluation and generate `ml/tempo_robustness.png`
+8. Generate a PCA visualisation of the embedding space
 
-Download from Kaggle: https://www.kaggle.com/datasets/andradaolteanu/gtzan-dataset-music-genre-classification
-
-Extract and place it at:
-
-```
-data/genres_original/
-├── blues/
-├── classical/
-├── country/
-...
-```
-
----
-
-## Usage
-
-### Register your songs
-
-Drop MP3/WAV files into `test_songs/` then register them:
-
+To skip already-completed steps:
 ```bash
-python tests/test_phase3.py --songs test_songs/
+python tests/test_phase5.py --skip-register   # reuse existing songs.db and wav_cache
+python tests/test_phase5.py --skip-train      # reuse existing model weights
+python tests/test_phase5.py --skip-record     # reuse saved mic snippet
 ```
 
-This converts each file to 22050 Hz mono WAV, runs it through the full preprocessing pipeline, fingerprints it, and stores the hashes in `output/songs.db`. On subsequent runs use `--reuse-db` to skip re-registration.
-
-### Identify a song
+### 4. Identify a song
 
 ```bash
 python main.py
 ```
 
-Records 10 seconds from your microphone, runs both fingerprinting paths, and prints the result. Make sure the song is playing loudly enough to be picked up.
-
-Optional flags:
-```bash
-python main.py --db output/songs.db --index ml/faiss.index
-```
+Records 10 seconds from your microphone. Make sure the song is playing
+loudly enough to be picked up clearly.
 
 ---
 
-## Training the ML Model
+## Key Design Decisions
 
-Training only needs to be done once. The weights are saved to `ml/embedder.pt` and reused automatically on every subsequent run.
+**Why two paths instead of one?**
+Classical fingerprinting is fast and exact but breaks under noise and tempo
+variation. ML embeddings are robust but imprecise on acoustically similar
+songs. Running both and cross-validating gives higher confidence than either
+alone and makes failure modes explicit in the output.
 
-### Run training
+**Why semi-hard negative mining instead of random negatives?**
+Random negatives (e.g. pairing a K-pop song against classical music) are
+trivially easy — the model solves them in the first epoch and learns nothing
+further. Semi-hard negatives are the most confusable songs given the current
+model state, forcing the model to learn fine-grained distinctions throughout
+all 15 epochs. This produces the oscillating training curve visible above.
 
-```bash
-python tests/test_phase5.py --skip-register
-```
+**Why remove GTZAN from training?**
+Initial experiments included GTZAN for general audio understanding. However
+GTZAN teaches genre-level separation (blues vs classical vs hip hop) which
+caused embeddings to cluster by genre rather than by individual song.
+Removing GTZAN and training exclusively on the 20 database songs forced
+song-level discrimination, producing better separation in the embedding
+space for the specific identification task.
 
-This will:
-1. Load 800 files from GTZAN (8 genres)
-2. Build ~7,200 triplets with augmentation (TimeStretch ±20%, noise, reverb, pitch shift)
-3. Train the CNN for 5 epochs with triplet loss
-4. Save weights to `ml/embedder.pt`
-5. Build the FAISS index from your songs in `test_songs/`
-6. Run the tempo robustness evaluation
-7. Record a snippet and test the full dual-path matcher
-8. Generate a PCA visualisation of the embedding space
+**Why Demucs over spectral subtraction?**
+Spectral subtraction requires a clean noise reference sample captured before
+recording begins. Demucs requires no reference — it separates music from
+non-music using a pretrained source separation model, allowing music to play
+from the first second of recording.
 
-If songs are already registered and you only want to retrain:
-```bash
-python tests/test_phase5.py --skip-register --epochs 5
-```
+---
 
-If the model is already trained and you only want to rebuild the index and test matching:
-```bash
-python tests/test_phase5.py --skip-register --skip-train
-```
+## Limitations
+
+- The system can only identify songs that have been registered in its
+database. This is a fundamental property of all audio fingerprinting
+systems including Shazam — a song must be explicitly added before it can
+be matched.
+- The ML path performs best on acoustically distinct songs. Similar-genre
+songs (multiple upbeat pop songs, multiple hip hop songs) produce nearby
+embeddings and the classical path carries more weight for those cases.
+- Tempo robustness is validated at ±20% training range. The iOS Voice Memos
+fast setting (1.5x) exceeds this range and may not match reliably via the
+ML path — the classical path is also unlikely to match at 1.5x due to hash
+time delta drift.
 
 ---
 
 ## Key Constants
 
-These are fixed across all modules and must stay consistent:
-
 | Constant | Value |
 |---|---|
 | Sample rate | 22050 Hz |
-| Clip length | 10 seconds |
+| Clip length | 5 seconds (training) / 10 seconds (query) |
 | Channels | Mono |
 | Mel bins | 128 |
 | Embedding dimension | 128 |
 | Hash fan-out | 15 |
 | STFT n_fft | 2048 |
 | STFT hop length | 512 |
+| Triplet margin | 0.3 |
+| Training epochs | 15 |
+| Learning rate | 1e-4 → 1e-6 (cosine decay) |

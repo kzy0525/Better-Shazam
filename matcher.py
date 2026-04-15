@@ -97,10 +97,9 @@ def match(
     t_ml.join()
 
     def _normalize(s: str) -> str:
-        """Lowercase, strip punctuation, collapse whitespace for title comparison."""
+        """Lowercase and strip all non-alphanumeric characters for title comparison."""
         s = s.lower()
-        s = re.sub(r"[^\w\s]", "", s)
-        return re.sub(r"\s+", " ", s).strip()
+        return re.sub(r"[^a-z0-9]", "", s)
 
     # -----------------------------------------------------------------------
     # Report individual path results
@@ -125,9 +124,17 @@ def match(
     # -----------------------------------------------------------------------
     # Combine — check if classical matches any of the top 3 ML results
     # -----------------------------------------------------------------------
+    CLASSICAL_STRONG_THRESHOLD = 35
     ML_HIGH_SIMILARITY = 0.70
 
     print("\n--- Final Decision ---")
+
+    # Strong classical signal — trust it outright, no ML needed
+    if c_title is not None and c_conf >= CLASSICAL_STRONG_THRESHOLD:
+        label = "CONFIDENT — strong classical match"
+        print(f"  {c_title} by {c_artist}")
+        print(f"  {label}")
+        return c_title, c_artist, label
 
     ml_match_position = None  # 0-indexed position in ML top-3 where classical agrees
     ml_match_score = 0.0

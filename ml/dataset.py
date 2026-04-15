@@ -156,7 +156,6 @@ def _build_augmenter(sr: int = SAMPLE_RATE) -> A.Compose:
         A.PitchShift(min_semitones=-2, max_semitones=2, p=0.3),
         A.RoomSimulator(p=0.6),
         A.LowPassFilter(min_cutoff_freq=4000, max_cutoff_freq=8000, p=0.3),
-        A.Mp3Compression(min_compression_rate=8, max_compression_rate=64, p=0.4),
         A.TanhDistortion(p=0.3),
     ])
 
@@ -459,8 +458,11 @@ def build_spectrogram_cache(
                 n_skipped += 1
                 continue
 
-            # Full preprocessing on the raw clip, then spectrogram
+            # Full preprocessing on the raw clip, then spectrogram.
+            # Wiener filter can produce NaN/inf on short clips — fall back to raw.
             processed = full_preprocess_pipeline(clip, sample_rate=sr)
+            if not np.isfinite(processed).all():
+                processed = clip.copy()
             spec = _to_spectrogram(processed, sr)
             np.save(cache_path, spec)
             n_cached += 1
@@ -527,8 +529,6 @@ def mine_triplets(
         tensors = torch.stack([_spec_to_tensor(s) for s in all_specs])  # (N, 1, H, W)
         embeddings = model(tensors)                                       # (N, 128)
 
-    unique_songs = list(dict.fromkeys(all_names))
-
     # Per-song index sets
     song_to_indices: dict[str, List[int]] = defaultdict(list)
     for i, name in enumerate(all_names):
@@ -546,11 +546,9 @@ def mine_triplets(
         if not neg_indices:
             continue
 
-        # Distance to anchor's own augmented positive — approximate with d=0
-        # (same clip, so d_pos ≈ small). Compute properly from a quick augment.
-        pos_audio_raw = np.load(cache_path)  # already a spectrogram — skip, use anchor
-        # d_pos is estimated as 0 for mining purposes; semi-hard condition becomes
-        # 0 < d(a, n) < margin, i.e. negatives inside the margin but further than anchor
+        # d_pos is estimated as 0 — the augmented positive is derived from the same
+        # clip so its true distance is small. Semi-hard condition becomes:
+        # 0 < d(a, n) < margin, i.e. negatives within the margin.
         d_pos = 0.0
 
         neg_embs = embeddings[neg_indices]
@@ -567,7 +565,7 @@ def mine_triplets(
             # Fall back to hardest negative (smallest distance)
             neg_i = neg_indices[int(np.argmin(dists_np))]
 
-        neg_distances.append(float(dists_np[[neg_indices.index(neg_i)]]))
+        neg_distances.append(float(dists_np[neg_indices.index(neg_i)]))
         neg_spec = all_specs[neg_i]
 
         # Generate augmented positives

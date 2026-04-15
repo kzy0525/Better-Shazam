@@ -28,14 +28,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import numpy as np
 import soundfile as sf
 import audiomentations as A
-import torch
-import torch.nn.functional as F
-
 from fingerprint.database import register_song, create_db, list_songs
 from ml.model import train, get_model, evaluate_tempo_robustness
 from ml.embeddings import build_faiss_index, query_faiss, visualize_embeddings
 from audio.capture import record
-from audio.preprocess import full_preprocess_pipeline
 from matcher import match
 from config import SAMPLE_RATE, CLIP_LENGTH
 
@@ -91,7 +87,7 @@ def main() -> None:
     parser.add_argument("--skip-register", action="store_true", help="Skip step 1 — reuse existing songs.db and wav_cache")
     parser.add_argument("--skip-train",    action="store_true", help="Skip step 3 — reuse existing model weights")
     parser.add_argument("--skip-record",   action="store_true", help="Skip step 6 — reuse saved snippet")
-    parser.add_argument("--epochs",        type=int, default=5)
+    parser.add_argument("--epochs",        type=int, default=15)
     args = parser.parse_args()
 
     os.makedirs(WAV_DIR, exist_ok=True)

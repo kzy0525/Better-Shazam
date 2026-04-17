@@ -13,9 +13,9 @@ function MicIcon() {
 }
 
 const PILLS = [
-  { emoji: '⚡', label: 'Classical Fingerprinting' },
-  { emoji: '🧠', label: 'ML Embeddings' },
-  { emoji: '🔊', label: 'Noise Removal' },
+  { label: 'Classical Fingerprinting' },
+  { label: 'ML Embeddings' },
+  { label: 'Noise Removal' },
 ];
 
 export default function IdleScreen({ onRecord }) {
@@ -27,7 +27,7 @@ export default function IdleScreen({ onRecord }) {
       <div style={{ textAlign: 'center' }}>
         <h1 style={{
           fontSize: 48, fontWeight: 800, letterSpacing: '-1px',
-          textShadow: `0 0 30px rgba(0,212,200,0.5), 0 0 60px rgba(0,212,200,0.2)`,
+          textShadow: `0 0 30px rgba(255,107,43,0.5), 0 0 60px rgba(255,107,43,0.2)`,
           marginBottom: 10,
         }}>
           Better Shazam
@@ -48,8 +48,8 @@ export default function IdleScreen({ onRecord }) {
             background: `radial-gradient(circle at 40% 35%, ${C.accent}, ${C.accentDk})`,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             boxShadow: hovered
-              ? `0 0 70px rgba(0,212,200,0.60), 0 0 140px rgba(0,212,200,0.25)`
-              : `0 0 40px rgba(0,212,200,0.30), 0 0 80px rgba(0,212,200,0.10)`,
+              ? `0 0 70px rgba(255,107,43,0.60), 0 0 140px rgba(255,107,43,0.25)`
+              : `0 0 40px rgba(255,107,43,0.30), 0 0 80px rgba(255,107,43,0.10)`,
             transform: hovered ? 'scale(1.05)' : 'scale(1)',
             transition: 'all 300ms ease',
             animation: 'glowPulse 3s ease-in-out infinite',
@@ -62,7 +62,7 @@ export default function IdleScreen({ onRecord }) {
 
       {/* Feature pills */}
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', justifyContent: 'center' }}>
-        {PILLS.map(({ emoji, label }) => (
+        {PILLS.map(({ label }) => (
           <div
             key={label}
             style={{
@@ -70,11 +70,9 @@ export default function IdleScreen({ onRecord }) {
               background: C.card,
               border: `1px solid ${C.border}`,
               color: C.muted, fontSize: 13, fontWeight: 500,
-              display: 'flex', alignItems: 'center', gap: 6,
             }}
           >
-            <span>{emoji}</span>
-            <span>{label}</span>
+            {label}
           </div>
         ))}
       </div>

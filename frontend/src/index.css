@@ -35,8 +35,8 @@ body {
 }
 
 @keyframes glowPulse {
-  0%, 100% { box-shadow: 0 0 40px rgba(0,212,200,0.30), 0 0 80px rgba(0,212,200,0.10); }
-  50%       { box-shadow: 0 0 60px rgba(0,212,200,0.55), 0 0 120px rgba(0,212,200,0.20); }
+  0%, 100% { box-shadow: 0 0 40px rgba(255,107,43,0.30), 0 0 80px rgba(255,107,43,0.10); }
+  50%       { box-shadow: 0 0 60px rgba(255,107,43,0.55), 0 0 120px rgba(255,107,43,0.20); }
 }
 
 @keyframes ringPulse {

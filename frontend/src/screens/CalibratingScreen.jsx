@@ -9,11 +9,11 @@ export default function CalibratingScreen() {
         border: `3px solid ${C.accent}`,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         animation: 'ringPulse 1.1s ease-in-out infinite',
-        boxShadow: `0 0 30px rgba(0,212,200,0.25)`,
+        boxShadow: `0 0 30px rgba(255,107,43,0.25)`,
       }}>
         <div style={{
           width: 140, height: 140, borderRadius: '50%',
-          border: `1.5px solid rgba(0,212,200,0.2)`,
+          border: `1.5px solid rgba(255,107,43,0.2)`,
         }} />
       </div>
 

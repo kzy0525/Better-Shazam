@@ -1,7 +1,6 @@
 import { useRef, useState } from 'react';
 import AnimatedBackground from './components/AnimatedBackground';
 import IdleScreen       from './screens/IdleScreen';
-import CalibratingScreen from './screens/CalibratingScreen';
 import RecordingScreen  from './screens/RecordingScreen';
 import ProcessingScreen from './screens/ProcessingScreen';
 import ResultScreen     from './screens/ResultScreen';
@@ -35,16 +34,12 @@ export default function App() {
 
   // ── Start: request mic + 1.5s calibration ────────────────────────────────
   async function handleRecordClick() {
-    setScreen('calibrating');
     try {
-      const [stream] = await Promise.all([
-        navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
-        }),
-        new Promise(r => setTimeout(r, 1500)),
-      ]);
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+      });
       streamRef.current = stream;
-      ctxRef.current = new (window.AudioContext || window.webkitAudioContext)();
+      ctxRef.current = new AudioContext();
       setScreen('recording');
     } catch (e) {
       const name = e?.name || '';
@@ -145,9 +140,6 @@ export default function App() {
       }}>
         {screen === 'idle' && (
           <IdleScreen onRecord={handleRecordClick} />
-        )}
-        {screen === 'calibrating' && (
-          <CalibratingScreen />
         )}
         {screen === 'recording' && (
           <RecordingScreen

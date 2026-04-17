@@ -22,14 +22,19 @@ export default function RecordingScreen({ stream, audioContext, onComplete }) {
 
     const source    = audioContext.createMediaStreamSource(stream);
     const analyser  = audioContext.createAnalyser();
-    analyser.fftSize = 256;
+    analyser.fftSize = 1024;
+    analyser.smoothingTimeConstant = 0.6;
+    analyser.minDecibels = -85;
+    analyser.maxDecibels = -10;
     analyserRef.current = analyser;
 
     const processor  = audioContext.createScriptProcessor(4096, 1, 1);
     const silentGain = audioContext.createGain();
     silentGain.gain.value = 0;
 
+    // analyser must be in the connected graph or Chrome won't feed it data
     source.connect(analyser);
+    analyser.connect(silentGain);
     source.connect(processor);
     processor.connect(silentGain);
     silentGain.connect(audioContext.destination);
@@ -77,14 +82,18 @@ export default function RecordingScreen({ stream, audioContext, onComplete }) {
         const { width, height } = canvas;
         ctx.clearRect(0, 0, width, height);
 
+        // Frequency domain — far more reactive to music than time domain
         const data = new Uint8Array(analyser.frequencyBinCount);
-        analyser.getByteTimeDomainData(data);
+        analyser.getByteFrequencyData(data);
 
         const barCount = 60;
         const barW     = width / barCount;
+        // Use the lower 70% of frequency bins — that's where musical content lives
+        const binRange = Math.floor(data.length * 0.7);
         for (let i = 0; i < barCount; i++) {
-          const sample = data[Math.floor(i * data.length / barCount)] / 128 - 1;
-          const barH   = Math.max(3, Math.abs(sample) * height * 0.9);
+          const bin    = Math.floor(i * binRange / barCount);
+          const value  = data[bin] / 255; // 0..1
+          const barH   = Math.max(2, value * height * 0.95);
           const x      = i * barW;
           const y      = (height - barH) / 2;
 
@@ -118,7 +127,7 @@ export default function RecordingScreen({ stream, audioContext, onComplete }) {
         <svg width="180" height="180" style={{ transform: 'rotate(-90deg)' }}>
           {/* Track */}
           <circle cx="90" cy="90" r={RADIUS} fill="none"
-            stroke="rgba(0,212,200,0.12)" strokeWidth="4" />
+            stroke="rgba(255,107,43,0.12)" strokeWidth="4" />
           {/* Progress */}
           <circle cx="90" cy="90" r={RADIUS} fill="none"
             stroke={C.accent} strokeWidth="4"
@@ -126,7 +135,7 @@ export default function RecordingScreen({ stream, audioContext, onComplete }) {
             strokeDasharray={CIRCUMFERENCE}
             strokeDashoffset={dashOffset}
             style={{
-              filter: 'drop-shadow(0 0 6px rgba(0,212,200,0.7))',
+              filter: 'drop-shadow(0 0 6px rgba(255,107,43,0.7))',
               transition: 'stroke-dashoffset 0.1s linear',
             }}
           />
@@ -154,8 +163,8 @@ export default function RecordingScreen({ stream, audioContext, onComplete }) {
         height={80}
         style={{
           borderRadius: 8,
-          background: 'rgba(0,212,200,0.04)',
-          border: `1px solid rgba(0,212,200,0.12)`,
+          background: 'rgba(255,107,43,0.04)',
+          border: `1px solid rgba(255,107,43,0.12)`,
         }}
       />
     </div>

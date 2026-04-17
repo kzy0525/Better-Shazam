@@ -32,8 +32,8 @@ export default function AnimatedBackground({ isRecording }) {
       ctx.clearRect(0, 0, width, height);
 
       const rec   = recordRef.current;
-      const base  = rec ? 0.065 : 0.038;
-      const speed = rec ? 1.9   : 1.0;
+      const base  = rec ? 0.216 : 0.144;
+      const speed = rec ? 1.9  : 1.0;
 
       timeRef.current += 0.016 * speed;
 
@@ -44,8 +44,8 @@ export default function AnimatedBackground({ isRecording }) {
           const y = yBase + Math.sin(x * w.freq + timeRef.current * w.speed + w.phase) * w.amp;
           x === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
         }
-        ctx.strokeStyle = `rgba(0,212,200,${base})`;
-        ctx.lineWidth   = 1.5;
+        ctx.strokeStyle = `rgba(255,107,43,${base})`;
+        ctx.lineWidth   = 2;
         ctx.stroke();
       });
 

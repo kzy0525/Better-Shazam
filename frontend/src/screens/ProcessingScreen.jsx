@@ -65,7 +65,7 @@ function StatusIndicator({ status }) {
   if (status === 'active') return (
     <div style={{
       width: 18, height: 18, borderRadius: '50%',
-      border: `2px solid rgba(0,212,200,0.25)`,
+      border: `2px solid rgba(255,107,43,0.25)`,
       borderTopColor: C.accent,
       animation: 'spin 0.7s linear infinite',
       flexShrink: 0,
@@ -100,10 +100,10 @@ function StepRow({ stepKey, status }) {
       display: 'flex', alignItems: 'center', gap: 14,
       padding: '12px 16px',
       background: status === 'active'
-        ? 'rgba(0,212,200,0.06)'
+        ? 'rgba(255,107,43,0.06)'
         : 'rgba(255,255,255,0.02)',
       borderRadius: 10,
-      border: `1px solid ${status === 'active' ? 'rgba(0,212,200,0.25)' : 'rgba(255,255,255,0.06)'}`,
+      border: `1px solid ${status === 'active' ? 'rgba(255,107,43,0.25)' : 'rgba(255,255,255,0.06)'}`,
       animation: 'fadeIn 300ms ease forwards',
       transition: 'all 300ms ease',
     }}>
@@ -122,7 +122,7 @@ function StepRow({ stepKey, status }) {
 // ── Main component ──────────────────────────────────────────────────────────
 const STEP_ORDER = ['demucs', 'wiener', 'bandpass', 'peaks', 'classical', 'ml', 'combining'];
 
-export default function ProcessingScreen({ steps, spectrogram }) {
+export default function ProcessingScreen({ steps }) {
   const visibleSteps = STEP_ORDER.filter(k => steps[k]);
 
   return (
@@ -139,28 +139,6 @@ export default function ProcessingScreen({ steps, spectrogram }) {
         ))}
       </div>
 
-      {/* Spectrogram — fades in when received */}
-      {spectrogram && (
-        <div style={{
-          width: '100%',
-          animation: 'fadeIn 400ms ease forwards',
-        }}>
-          <p style={{ color: C.muted, fontSize: 12, fontWeight: 500, marginBottom: 8, letterSpacing: '0.5px' }}>
-            RECORDED SPECTROGRAM
-          </p>
-          <div style={{
-            borderRadius: 12, overflow: 'hidden',
-            border: `1px solid ${C.border}`,
-            background: C.card,
-          }}>
-            <img
-              src={`data:image/png;base64,${spectrogram}`}
-              alt="Spectrogram"
-              style={{ width: '100%', maxHeight: 160, objectFit: 'cover', display: 'block' }}
-            />
-          </div>
-        </div>
-      )}
     </div>
   );
 }

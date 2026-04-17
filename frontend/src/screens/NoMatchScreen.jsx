@@ -30,7 +30,7 @@ export default function NoMatchScreen({ onReset }) {
     }}>
       {/* Icon */}
       <svg width="72" height="72" viewBox="0 0 72 72" fill="none">
-        <circle cx="36" cy="36" r="34" stroke="rgba(0,212,200,0.25)" strokeWidth="2"/>
+        <circle cx="36" cy="36" r="34" stroke="rgba(255,107,43,0.25)" strokeWidth="2"/>
         <path d="M22 22l28 28M50 22L22 50" stroke={C.accent} strokeWidth="3"
           strokeLinecap="round" opacity="0.6"/>
       </svg>

@@ -28,6 +28,18 @@ The final result combines both paths:
 
 ---
 
+## Screenshots
+
+| Home | Recording | Processing |
+|------|-----------|------------|
+| ![Home](UI_screenshots/home.png) | ![Recording](UI_screenshots/recording.png) | ![Processing](UI_screenshots/processing.png) |
+
+| Classical Result | ML Result |
+|-----------------|-----------|
+| ![Classical result](UI_screenshots/classical_result.png) | ![ML result](UI_screenshots/ML_result.png) |
+
+---
+
 ## System Pipeline
 
 ```
@@ -190,6 +202,29 @@ Both paths run in parallel via Python threading. Results are combined:
 
 ---
 
+## Key Design Decisions
+
+**Why two paths instead of one?**
+Classical fingerprinting is fast and exact but breaks under noise and tempo
+variation. ML embeddings are robust but imprecise on acoustically similar
+songs. Running both and cross-validating gives higher confidence than either
+alone and makes failure modes explicit in the output.
+
+**Why semi-hard negative mining instead of random negatives?**
+Random negatives (e.g. pairing a K-pop song against classical music) are
+trivially easy — the model solves them in the first epoch and learns nothing
+further. Semi-hard negatives are the most confusable songs given the current
+model state, forcing the model to learn fine-grained distinctions throughout
+all 15 epochs. This produces the oscillating training curve visible above.
+
+**Why Demucs over spectral subtraction?**
+Spectral subtraction requires a clean noise reference sample captured before
+recording begins. Demucs requires no reference — it separates music from
+non-music using a pretrained source separation model, allowing music to play
+from the first second of recording.
+
+---
+
 ## Project Structure
 
 ```
@@ -263,37 +298,6 @@ loudly enough to be picked up clearly.
 
 ---
 
-## Key Design Decisions
-
-**Why two paths instead of one?**
-Classical fingerprinting is fast and exact but breaks under noise and tempo
-variation. ML embeddings are robust but imprecise on acoustically similar
-songs. Running both and cross-validating gives higher confidence than either
-alone and makes failure modes explicit in the output.
-
-**Why semi-hard negative mining instead of random negatives?**
-Random negatives (e.g. pairing a K-pop song against classical music) are
-trivially easy — the model solves them in the first epoch and learns nothing
-further. Semi-hard negatives are the most confusable songs given the current
-model state, forcing the model to learn fine-grained distinctions throughout
-all 15 epochs. This produces the oscillating training curve visible above.
-
-**Why remove GTZAN from training?**
-Initial experiments included GTZAN for general audio understanding. However
-GTZAN teaches genre-level separation (blues vs classical vs hip hop) which
-caused embeddings to cluster by genre rather than by individual song.
-Removing GTZAN and training exclusively on the 20 database songs forced
-song-level discrimination, producing better separation in the embedding
-space for the specific identification task.
-
-**Why Demucs over spectral subtraction?**
-Spectral subtraction requires a clean noise reference sample captured before
-recording begins. Demucs requires no reference — it separates music from
-non-music using a pretrained source separation model, allowing music to play
-from the first second of recording.
-
----
-
 ## Limitations
 
 - The system can only identify songs that have been registered in its
@@ -303,10 +307,6 @@ be matched.
 - The ML path performs best on acoustically distinct songs. Similar-genre
 songs (multiple upbeat pop songs, multiple hip hop songs) produce nearby
 embeddings and the classical path carries more weight for those cases.
-- Tempo robustness is validated at ±20% training range. The iOS Voice Memos
-fast setting (1.5x) exceeds this range and may not match reliably via the
-ML path — the classical path is also unlikely to match at 1.5x due to hash
-time delta drift.
 
 ---
 
